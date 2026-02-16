@@ -1,6 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
 project(CubeViewer LANGUAGES C CXX)
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -12,22 +11,33 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 #
 # Prefer package config if present: <prefix>/lib/cmake/glfw3 or <prefix>/share/glfw3
 set(GLFW_PREFIX "${CMAKE_CURRENT_LIST_DIR}/../../external/glfw/_install")
-
 # Make both prefixes visible. CMake will choose debug/release libs via imported targets.
 list(PREPEND CMAKE_PREFIX_PATH
   "${GLFW_PREFIX}"
   "${GLFW_PREFIX}/debug"
 )
-
 # glfw3 provides a config package named "glfw3" and imported target "glfw"
 # (some installs expose "glfw3::glfw3" or "glfw")
 find_package(glfw3 CONFIG REQUIRED)
+
+# ---------- Assimp (prebuilt/installed in ../../external/assimp/_install) ----------
+set(ASSIMP_PREFIX "${CMAKE_CURRENT_LIST_DIR}/../../external/assimp/_install")
+list(PREPEND CMAKE_PREFIX_PATH
+  "${ASSIMP_PREFIX}"
+  "${ASSIMP_PREFIX}/debug"
+)
+# assimp provides a config package and imported target "assimp::assimp"
+find_package(assimp CONFIG REQUIRED)
 
 # ---------- Cube Viewer Application ----------
 set(SOURCES
   main.cpp
   app.cpp
+  app.h
   renderer_opengl.cpp
+  renderer.h
+  model_assimp.cpp
+  model.h
   ../../external/glad/src/glad.c
 )
 
@@ -42,8 +52,11 @@ target_include_directories(cube_viewer PRIVATE
   ../../external/glad/include
 )
 
-# Link GLFW imported target
-target_link_libraries(cube_viewer PRIVATE glfw)
+# Link GLFW and Assimp imported targets
+target_link_libraries(cube_viewer PRIVATE 
+  glfw
+  assimp::assimp
+)
 
 # Platform-specific settings
 if(WIN32)
