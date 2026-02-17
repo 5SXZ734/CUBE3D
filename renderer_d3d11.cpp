@@ -48,10 +48,10 @@ struct D3D11Mesh {
 
 // ==================== Constant Buffer Structure ====================
 struct CBData {
-    XMMATRIX mvp;     // transposed
-    XMMATRIX world;   // transposed
-    XMFLOAT3 lightDir;
-    float pad0;
+    XMMATRIX mvp;       // transposed  — 64 bytes
+    XMMATRIX world;     // transposed  — 64 bytes
+    XMFLOAT3 lightDir;                // 12 bytes
+    float    useTexture;              //  4 bytes  (1.0 = textured, 0.0 = vertex colour)
 };
 
 // ==================== D3D11 Shader ====================
@@ -176,49 +176,54 @@ private:
 
     // Convert OpenGL GLSL to HLSL (simple conversion)
     std::string glslToHLSL(const char* glslVS, const char* glslFS) {
-        // For simplicity, we'll use a hardcoded HLSL shader that matches
-        // the expected behavior. In a real implementation, you'd parse GLSL.
+        (void)glslVS; (void)glslFS; // We use our own HLSL; GLSL source is ignored
         return R"(
 cbuffer CB : register(b0)
 {
     float4x4 uMVP;
     float4x4 uWorld;
     float3   uLightDir;
-    float    pad0;
+    float    uUseTexture;
 };
 
+Texture2D    gTex     : register(t0);
+SamplerState gSampler : register(s0);
+
 struct VSIn {
-    float3 aPos : POSITION;
-    float3 aNrm : NORMAL;
-    float4 aCol : COLOR;
+    float3 aPos      : POSITION;
+    float3 aNrm      : NORMAL;
+    float4 aCol      : COLOR;
+    float2 aTexCoord : TEXCOORD0;
 };
 
 struct VSOut {
-    float4 pos : SV_Position;
-    float3 nrmW : TEXCOORD0;
-    float4 col : COLOR;
+    float4 pos      : SV_Position;
+    float3 nrmW     : TEXCOORD0;
+    float4 col      : COLOR;
+    float2 texCoord : TEXCOORD1;
 };
 
 VSOut VSMain(VSIn v)
 {
     VSOut o;
-    o.pos = mul(float4(v.aPos, 1.0), uMVP);
-    
-    float3 n = mul(float4(v.aNrm, 0.0), uWorld).xyz;
-    o.nrmW = normalize(n);
-    
-    o.col = v.aCol;
+    o.pos     = mul(float4(v.aPos, 1.0), uMVP);
+    o.nrmW    = normalize(mul(float4(v.aNrm, 0.0), uWorld).xyz);
+    o.col     = v.aCol;
+    o.texCoord = v.aTexCoord;
     return o;
 }
 
 float4 PSMain(VSOut i) : SV_Target
 {
-    float3 L = normalize(-uLightDir);
-    float ndl = saturate(dot(normalize(i.nrmW), L));
-    float ambient = 0.18;
-    float diff = ambient + ndl * 0.82;
-    
-    return float4(i.col.rgb * diff, 1.0);
+    float3 L   = normalize(-uLightDir);
+    float  ndl = saturate(dot(normalize(i.nrmW), L));
+    float  diff = 0.18 + ndl * 0.82;
+
+    float4 baseColor = (uUseTexture > 0.5)
+                       ? gTex.Sample(gSampler, i.texCoord)
+                       : i.col;
+
+    return float4(baseColor.rgb * diff, baseColor.a);
 }
 )";
     }
@@ -324,7 +329,21 @@ public:
 
         m_context->RSSetState(m_rasterizerState.Get());
 
-        std::printf("Direct3D 11 Renderer initialized\n");
+        // Create sampler state and bind it permanently to PS slot 0
+        D3D11_SAMPLER_DESC sampDesc{};
+        sampDesc.Filter         = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sampDesc.AddressU       = D3D11_TEXTURE_ADDRESS_WRAP;
+        sampDesc.AddressV       = D3D11_TEXTURE_ADDRESS_WRAP;
+        sampDesc.AddressW       = D3D11_TEXTURE_ADDRESS_WRAP;
+        sampDesc.MaxAnisotropy  = 1;
+        sampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+        sampDesc.MaxLOD         = D3D11_FLOAT32_MAX;
+        hr = m_device->CreateSamplerState(&sampDesc, m_samplerState.GetAddressOf());
+        if (FAILED(hr)) {
+            std::fprintf(stderr, "Failed to create sampler state\n");
+            return false;
+        }
+        m_context->PSSetSamplers(0, 1, m_samplerState.GetAddressOf());
         std::printf("Feature Level: %x\n", featureLevel);
 
         return true;
@@ -467,11 +486,12 @@ public:
             return 0;
         }
 
-        // Create input layout
+        // Create input layout — must match Vertex struct AND VSIn semantics
         D3D11_INPUT_ELEMENT_DESC layout[] = {
-            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 40, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         };
 
         hr = m_device->CreateInputLayout(
@@ -501,10 +521,10 @@ public:
         uint32_t handle = m_nextShaderHandle++;
         
         // Initialize constant buffer data
-        shader.cbData.mvp = XMMatrixIdentity();
-        shader.cbData.world = XMMatrixIdentity();
-        shader.cbData.lightDir = XMFLOAT3(0.0f, -1.0f, 0.0f);
-        shader.cbData.pad0 = 0.0f;
+        shader.cbData.mvp        = XMMatrixIdentity();
+        shader.cbData.world      = XMMatrixIdentity();
+        shader.cbData.lightDir   = XMFLOAT3(0.0f, -1.0f, 0.0f);
+        shader.cbData.useTexture = 0.0f;
         
         m_shaders[handle] = shader;
         return handle;
@@ -618,9 +638,10 @@ public:
     }
 
     void setUniformInt(uint32_t shaderHandle, const char* name, int value) override {
-        (void)shaderHandle;
-        (void)name;
-        (void)value;
+        auto it = m_shaders.find(shaderHandle);
+        if (it == m_shaders.end()) return;
+        if (strcmp(name, "uUseTexture") == 0)
+            it->second.cbData.useTexture = (float)value;
     }
 
     void drawMesh(uint32_t meshHandle, uint32_t textureHandle = 0) override {
@@ -631,6 +652,9 @@ public:
         auto shaderIt = m_shaders.find(m_currentShader);
         if (shaderIt != m_shaders.end()) {
             D3D11Shader& shader = shaderIt->second;
+
+            // Propagate texture flag before uploading to GPU
+            shader.cbData.useTexture = (textureHandle > 0) ? 1.0f : 0.0f;
             
             D3D11_MAPPED_SUBRESOURCE ms{};
             HRESULT hr = m_context->Map(shader.constantBuffer.Get(), 0, 
@@ -645,13 +669,16 @@ public:
             m_context->PSSetConstantBuffers(0, 1, shader.constantBuffer.GetAddressOf());
         }
 
-        // Bind texture
+        // Bind or unbind texture
         if (textureHandle > 0) {
             auto texIt = m_textures.find(textureHandle);
             if (texIt != m_textures.end()) {
                 ID3D11ShaderResourceView* srv = texIt->second.srv.Get();
                 m_context->PSSetShaderResources(0, 1, &srv);
             }
+        } else {
+            ID3D11ShaderResourceView* nullSRV = nullptr;
+            m_context->PSSetShaderResources(0, 1, &nullSRV);
         }
 
         D3D11Mesh& mesh = meshIt->second;
