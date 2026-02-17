@@ -6,6 +6,14 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include "stb_image.h"
+
+// ==================== OpenGL Texture ====================
+struct GLTexture {
+    GLuint id;
+    int width;
+    int height;
+};
 
 // ==================== OpenGL Mesh ====================
 struct GLMesh {
@@ -27,8 +35,10 @@ private:
     GLFWwindow* m_window;
     std::unordered_map<uint32_t, GLMesh> m_meshes;
     std::unordered_map<uint32_t, GLShader> m_shaders;
+    std::unordered_map<uint32_t, GLTexture> m_textures;
     uint32_t m_nextMeshHandle;
     uint32_t m_nextShaderHandle;
+    uint32_t m_nextTextureHandle;
     uint32_t m_currentShader;
 
     GLuint compileShader(GLenum type, const char* src) {
@@ -75,6 +85,7 @@ public:
         : m_window(nullptr)
         , m_nextMeshHandle(1)
         , m_nextShaderHandle(1)
+        , m_nextTextureHandle(1)
         , m_currentShader(0)
     {}
 
@@ -163,6 +174,10 @@ public:
         // Color
         glEnableVertexAttribArray(2);
         glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(6 * sizeof(float)));
+
+        // TexCoord
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(10 * sizeof(float)));
 
         glBindVertexArray(0);
 
@@ -262,7 +277,98 @@ public:
         }
     }
 
-    void drawMesh(uint32_t meshHandle) override {
+    uint32_t createTexture(const char* filepath) override {
+        // Load image using stb_image
+        int width, height, channels;
+        stbi_set_flip_vertically_on_load(true); // OpenGL expects bottom-left origin
+        unsigned char* data = stbi_load(filepath, &width, &height, &channels, 0);
+        
+        if (!data) {
+            std::fprintf(stderr, "Failed to load texture: %s\n", filepath);
+            std::fprintf(stderr, "STB Error: %s\n", stbi_failure_reason());
+            return 0;
+        }
+
+        std::printf("Loaded texture: %s (%dx%d, %d channels)\n", filepath, width, height, channels);
+
+        // Create OpenGL texture
+        GLTexture texture;
+        texture.width = width;
+        texture.height = height;
+
+        glGenTextures(1, &texture.id);
+        glBindTexture(GL_TEXTURE_2D, texture.id);
+        
+        // Determine format
+        GLenum format = GL_RGB;
+        if (channels == 1) format = GL_RED;
+        else if (channels == 3) format = GL_RGB;
+        else if (channels == 4) format = GL_RGBA;
+        
+        // Upload texture data
+        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+        
+        // Set texture parameters
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        
+        // Generate mipmaps
+        glGenerateMipmap(GL_TEXTURE_2D);
+        
+        glBindTexture(GL_TEXTURE_2D, 0);
+        
+        // Free image data
+        stbi_image_free(data);
+        
+        // Store and return handle
+        uint32_t handle = m_nextTextureHandle++;
+        m_textures[handle] = texture;
+        return handle;
+    }
+
+    void destroyTexture(uint32_t textureHandle) override {
+        auto it = m_textures.find(textureHandle);
+        if (it != m_textures.end()) {
+            glDeleteTextures(1, &it->second.id);
+            m_textures.erase(it);
+        }
+    }
+
+    void setUniformInt(uint32_t shaderHandle, const char* name, int value) override {
+        auto it = m_shaders.find(shaderHandle);
+        if (it != m_shaders.end()) {
+            GLShader& shader = it->second;
+            auto locIt = shader.uniformLocations.find(name);
+            GLint loc;
+            if (locIt == shader.uniformLocations.end()) {
+                loc = glGetUniformLocation(shader.program, name);
+                shader.uniformLocations[name] = loc;
+            } else {
+                loc = locIt->second;
+            }
+            if (loc >= 0) {
+                glUniform1i(loc, value);
+            }
+        }
+    }
+
+    void drawMesh(uint32_t meshHandle, uint32_t textureHandle = 0) override {
+        // Bind texture if present
+        if (textureHandle > 0) {
+            auto texIt = m_textures.find(textureHandle);
+            if (texIt != m_textures.end()) {
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, texIt->second.id);
+            }
+        } else {
+            // Unbind texture
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+        
+        // Draw mesh
         auto it = m_meshes.find(meshHandle);
         if (it != m_meshes.end()) {
             glBindVertexArray(it->second.vao);

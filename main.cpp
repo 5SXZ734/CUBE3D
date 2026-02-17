@@ -4,26 +4,35 @@
 #include <cstring>
 
 int main(int argc, char** argv) {
-    // Parse command line for renderer selection
+    // Parse command line for renderer selection and optional model path
     RendererAPI api = RendererAPI::OpenGL;
+    const char* modelPath = nullptr;
     
-    if (argc > 1) {
-        if (strcmp(argv[1], "opengl") == 0 || strcmp(argv[1], "gl") == 0) {
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "opengl") == 0 || strcmp(argv[i], "gl") == 0) {
             api = RendererAPI::OpenGL;
-        } else if (strcmp(argv[1], "d3d11") == 0 || strcmp(argv[1], "dx11") == 0) {
+        } else if (strcmp(argv[i], "d3d11") == 0 || strcmp(argv[i], "dx11") == 0) {
             api = RendererAPI::Direct3D11;
-        } else if (strcmp(argv[1], "d3d12") == 0 || strcmp(argv[1], "dx12") == 0) {
+        } else if (strcmp(argv[i], "d3d12") == 0 || strcmp(argv[i], "dx12") == 0) {
             api = RendererAPI::Direct3D12;
         } else {
-            std::fprintf(stderr, "Usage: %s [opengl|d3d11|d3d12]\n", argv[0]);
-            return 1;
+            // Assume it's a model file path
+            modelPath = argv[i];
         }
+    }
+
+    // Print usage
+    if (modelPath) {
+        std::fprintf(stdout, "Loading model: %s\n", modelPath);
+    } else {
+        std::fprintf(stdout, "Usage: %s [opengl|d3d11|d3d12] [model.x]\n", argv[0]);
+        std::fprintf(stdout, "No model specified, using default cube\n");
     }
 
     // Create and run application
     CubeApp app;
     
-    if (!app.initialize(api)) {
+    if (!app.initialize(api, modelPath)) {
         std::fprintf(stderr, "Failed to initialize application\n");
         return 1;
     }

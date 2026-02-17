@@ -111,8 +111,8 @@ CubeApp::CubeApp()
     , m_width(1280)
     , m_height(720)
     , m_renderer(nullptr)
-    , m_cubeMesh(0)
     , m_shader(0)
+    , m_hasModel(false)
     , m_dragging(false)
     , m_lastX(0.0)
     , m_lastY(0.0)
@@ -127,7 +127,7 @@ CubeApp::~CubeApp() {
     shutdown();
 }
 
-bool CubeApp::initialize(RendererAPI api) {
+bool CubeApp::initialize(RendererAPI api, const char* modelPath) {
     // Initialize GLFW
     if (!glfwInit()) {
         std::fprintf(stderr, "Failed to initialize GLFW\n");
@@ -143,7 +143,7 @@ bool CubeApp::initialize(RendererAPI api) {
     }
 
     // Create window
-    m_window = glfwCreateWindow(m_width, m_height, "Cube Viewer", nullptr, nullptr);
+    m_window = glfwCreateWindow(m_width, m_height, "Model Viewer", nullptr, nullptr);
     if (!m_window) {
         std::fprintf(stderr, "Failed to create window\n");
         glfwTerminate();
@@ -184,57 +184,41 @@ bool CubeApp::initialize(RendererAPI api) {
     glfwGetFramebufferSize(m_window, &fbW, &fbH);
     onFramebufferSize(fbW, fbH);
 
-    // Create cube mesh
-    const Vertex verts[] = {
-        // +Z (red tones)
-        {-1,-1,+1, 0,0,+1, 1,0,0,1}, {-1,+1,+1, 0,0,+1, 1,0.5f,0,1},
-        {+1,+1,+1, 0,0,+1, 1,1,0,1}, {+1,-1,+1, 0,0,+1, 0.9f,0.1f,0.1f,1},
-        // -Z (cyan tones)
-        {+1,-1,-1, 0,0,-1, 0,1,1,1}, {+1,+1,-1, 0,0,-1, 0,0.7f,1,1},
-        {-1,+1,-1, 0,0,-1, 0,0.4f,1,1}, {-1,-1,-1, 0,0,-1, 0,0.9f,0.9f,1},
-        // +X (green tones)
-        {+1,-1,+1, +1,0,0, 0.2f,1,0.2f,1}, {+1,+1,+1, +1,0,0, 0.2f,1,0.6f,1},
-        {+1,+1,-1, +1,0,0, 0.2f,1,1,1}, {+1,-1,-1, +1,0,0, 0.2f,0.8f,0.2f,1},
-        // -X (magenta tones)
-        {-1,-1,-1, -1,0,0, 1,0.2f,1,1}, {-1,+1,-1, -1,0,0, 0.8f,0.2f,1,1},
-        {-1,+1,+1, -1,0,0, 0.6f,0.2f,1,1}, {-1,-1,+1, -1,0,0, 1,0.2f,0.8f,1},
-        // +Y (white/gray tones)
-        {-1,+1,+1, 0,+1,0, 1,1,1,1}, {-1,+1,-1, 0,+1,0, 0.8f,0.8f,0.8f,1},
-        {+1,+1,-1, 0,+1,0, 0.6f,0.6f,0.6f,1}, {+1,+1,+1, 0,+1,0, 0.9f,0.9f,0.9f,1},
-        // -Y (brown tones)
-        {-1,-1,-1, 0,-1,0, 0.6f,0.3f,0.1f,1}, {-1,-1,+1, 0,-1,0, 0.7f,0.35f,0.12f,1},
-        {+1,-1,+1, 0,-1,0, 0.8f,0.4f,0.15f,1}, {+1,-1,-1, 0,-1,0, 0.5f,0.25f,0.08f,1},
-    };
+    // Load model or create default cube
+    if (modelPath != nullptr) {
+        if (!loadModel(modelPath)) {
+            std::fprintf(stderr, "Failed to load model, using default cube\n");
+            if (!createDefaultCube()) {
+                return false;
+            }
+        }
+    } else {
+        if (!createDefaultCube()) {
+            return false;
+        }
+    }
 
-    const uint16_t idx[] = {
-        0,1,2, 0,2,3,
-        4,5,6, 4,6,7,
-        8,9,10, 8,10,11,
-        12,13,14, 12,14,15,
-        16,17,18, 16,18,19,
-        20,21,22, 20,22,23
-    };
-
-    m_cubeMesh = m_renderer->createMesh(verts, 24, idx, 36);
-
-    // Create shader
+    // Create shader with texture support
     const char* vsSrc = R"(
 #version 330 core
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNrm;
 layout(location=2) in vec4 aCol;
+layout(location=3) in vec2 aTexCoord;
 
 uniform mat4 uMVP;
 uniform mat4 uWorld;
 
 out vec3 vNrmW;
 out vec4 vCol;
+out vec2 vTexCoord;
 
 void main()
 {
     gl_Position = uMVP * vec4(aPos, 1.0);
     vNrmW = normalize((uWorld * vec4(aNrm, 0.0)).xyz);
     vCol = aCol;
+    vTexCoord = aTexCoord;
 }
 )";
 
@@ -242,7 +226,12 @@ void main()
 #version 330 core
 in vec3 vNrmW;
 in vec4 vCol;
+in vec2 vTexCoord;
+
 uniform vec3 uLightDir;
+uniform int uUseTexture;
+uniform sampler2D uTexture;
+
 out vec4 FragColor;
 
 void main()
@@ -251,7 +240,13 @@ void main()
     float ndl = max(dot(normalize(vNrmW), L), 0.0);
     float ambient = 0.18;
     float diff = ambient + ndl * 0.82;
-    FragColor = vec4(vCol.rgb * diff, 1.0);
+    
+    vec4 baseColor = vCol;
+    if (uUseTexture > 0) {
+        baseColor = texture(uTexture, vTexCoord);
+    }
+    
+    FragColor = vec4(baseColor.rgb * diff, baseColor.a);
 }
 )";
 
@@ -259,18 +254,27 @@ void main()
 
     // Set render state
     m_renderer->setDepthTest(true);
-    m_renderer->setCulling(false); // Disable culling to see all faces
+    m_renderer->setCulling(false);
 
     m_startTime = glfwGetTime();
     m_lastFrameTime = m_startTime;
 
     std::printf("Application initialized successfully\n");
+    if (m_hasModel) {
+        std::printf("Loaded model with %zu meshes\n", m_meshes.size());
+    }
     return true;
 }
 
 void CubeApp::shutdown() {
     if (m_renderer) {
-        if (m_cubeMesh) m_renderer->destroyMesh(m_cubeMesh);
+        // Destroy all meshes and textures
+        for (auto& mesh : m_meshes) {
+            if (mesh.meshHandle) m_renderer->destroyMesh(mesh.meshHandle);
+            if (mesh.textureHandle) m_renderer->destroyTexture(mesh.textureHandle);
+        }
+        m_meshes.clear();
+        
         if (m_shader) m_renderer->destroyShader(m_shader);
         m_renderer->shutdown();
         delete m_renderer;
@@ -302,6 +306,101 @@ void CubeApp::update(float deltaTime) {
     // Application logic updates go here
 }
 
+bool CubeApp::loadModel(const char* path) {
+    std::printf("Loading model: %s\n", path);
+    
+    if (!ModelLoader::LoadXFile(path, m_model)) {
+        std::fprintf(stderr, "Failed to load model from: %s\n", path);
+        return false;
+    }
+
+    // Upload meshes to renderer
+    for (auto& modelMesh : m_model.meshes) {
+        // Convert ModelVertex to Vertex
+        std::vector<Vertex> vertices;
+        vertices.reserve(modelMesh.vertices.size());
+        
+        for (const auto& v : modelMesh.vertices) {
+            Vertex vert;
+            vert.px = v.px; vert.py = v.py; vert.pz = v.pz;
+            vert.nx = v.nx; vert.ny = v.ny; vert.nz = v.nz;
+            vert.r = 1.0f; vert.g = 1.0f; vert.b = 1.0f; vert.a = 1.0f; // white for textured
+            vert.u = v.u; vert.v = v.v;
+            vertices.push_back(vert);
+        }
+
+        // Convert indices to uint16_t
+        std::vector<uint16_t> indices;
+        indices.reserve(modelMesh.indices.size());
+        for (uint32_t idx : modelMesh.indices) {
+            indices.push_back((uint16_t)idx);
+        }
+
+        MeshData mesh;
+        mesh.meshHandle = m_renderer->createMesh(
+            vertices.data(), vertices.size(),
+            indices.data(), indices.size()
+        );
+
+        // Load texture if present
+        mesh.textureHandle = 0;
+        if (!modelMesh.texturePath.empty()) {
+            mesh.textureHandle = m_renderer->createTexture(modelMesh.texturePath.c_str());
+            if (mesh.textureHandle) {
+                std::printf("Loaded texture: %s\n", modelMesh.texturePath.c_str());
+            }
+        }
+
+        m_meshes.push_back(mesh);
+    }
+
+    m_hasModel = true;
+    return true;
+}
+
+bool CubeApp::createDefaultCube() {
+    std::printf("Creating default cube\n");
+    
+    // Create cube mesh (24 verts, 36 indices) with texture coordinates
+    const Vertex verts[] = {
+        // +Z (red) - front
+        {-1,-1,+1, 0,0,+1, 1,0,0,1, 0,0}, {-1,+1,+1, 0,0,+1, 1,0.5f,0,1, 0,1},
+        {+1,+1,+1, 0,0,+1, 1,1,0,1, 1,1}, {+1,-1,+1, 0,0,+1, 0.9f,0.1f,0.1f,1, 1,0},
+        // -Z (cyan) - back
+        {+1,-1,-1, 0,0,-1, 0,1,1,1, 0,0}, {+1,+1,-1, 0,0,-1, 0,0.7f,1,1, 0,1},
+        {-1,+1,-1, 0,0,-1, 0,0.4f,1,1, 1,1}, {-1,-1,-1, 0,0,-1, 0,0.9f,0.9f,1, 1,0},
+        // +X (green) - right
+        {+1,-1,+1, +1,0,0, 0.2f,1,0.2f,1, 0,0}, {+1,+1,+1, +1,0,0, 0.2f,1,0.6f,1, 0,1},
+        {+1,+1,-1, +1,0,0, 0.2f,1,1,1, 1,1}, {+1,-1,-1, +1,0,0, 0.2f,0.8f,0.2f,1, 1,0},
+        // -X (magenta) - left
+        {-1,-1,-1, -1,0,0, 1,0.2f,1,1, 0,0}, {-1,+1,-1, -1,0,0, 0.8f,0.2f,1,1, 0,1},
+        {-1,+1,+1, -1,0,0, 0.6f,0.2f,1,1, 1,1}, {-1,-1,+1, -1,0,0, 1,0.2f,0.8f,1, 1,0},
+        // +Y (white) - top
+        {-1,+1,+1, 0,+1,0, 1,1,1,1, 0,0}, {-1,+1,-1, 0,+1,0, 0.8f,0.8f,0.8f,1, 0,1},
+        {+1,+1,-1, 0,+1,0, 0.6f,0.6f,0.6f,1, 1,1}, {+1,+1,+1, 0,+1,0, 0.9f,0.9f,0.9f,1, 1,0},
+        // -Y (brown) - bottom
+        {-1,-1,-1, 0,-1,0, 0.6f,0.3f,0.1f,1, 0,0}, {-1,-1,+1, 0,-1,0, 0.7f,0.35f,0.12f,1, 0,1},
+        {+1,-1,+1, 0,-1,0, 0.8f,0.4f,0.15f,1, 1,1}, {+1,-1,-1, 0,-1,0, 0.5f,0.25f,0.08f,1, 1,0},
+    };
+
+    const uint16_t idx[] = {
+        0,1,2, 0,2,3,       // front
+        4,5,6, 4,6,7,       // back
+        8,9,10, 8,10,11,    // right
+        12,13,14, 12,14,15, // left
+        16,17,18, 16,18,19, // top
+        20,21,22, 20,22,23  // bottom
+    };
+
+    MeshData mesh;
+    mesh.meshHandle = m_renderer->createMesh(verts, 24, idx, 36);
+    mesh.textureHandle = 0; // No texture for cube
+    m_meshes.push_back(mesh);
+
+    m_hasModel = false;
+    return true;
+}
+
 void CubeApp::render() {
     m_renderer->setClearColor(0.03f, 0.03f, 0.06f, 1.0f);
     m_renderer->beginFrame();
@@ -324,13 +423,20 @@ void CubeApp::render() {
     // Combined MVP
     Mat4 mvp = mat4_mul(proj, mat4_mul(view, world));
 
-    // Set uniforms and draw
+    // Set uniforms
     m_renderer->useShader(m_shader);
     m_renderer->setUniformMat4(m_shader, "uMVP", mvp);
     m_renderer->setUniformMat4(m_shader, "uWorld", world);
     m_renderer->setUniformVec3(m_shader, "uLightDir", {-0.6f, -1.0f, -0.4f});
 
-    m_renderer->drawMesh(m_cubeMesh);
+    // Draw all meshes
+    for (const auto& mesh : m_meshes) {
+        // Set texture flag
+        m_renderer->setUniformInt(m_shader, "uUseTexture", mesh.textureHandle ? 1 : 0);
+        
+        // Draw mesh with texture (if any)
+        m_renderer->drawMesh(mesh.meshHandle, mesh.textureHandle);
+    }
 
     m_renderer->endFrame();
 }

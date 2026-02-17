@@ -1,35 +1,11 @@
 cmake_minimum_required(VERSION 3.25)
 project(CubeViewer LANGUAGES C CXX)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# ---------- GLFW (prebuilt/installed in ../../external/glfw/_install) ----------
-# vcpkg-like layout supported:
-#   <prefix>/lib + <prefix>/include
-#   <prefix>/debug/lib + <prefix>/debug/include (optional)
-#
-# Prefer package config if present: <prefix>/lib/cmake/glfw3 or <prefix>/share/glfw3
-set(GLFW_PREFIX "${CMAKE_CURRENT_LIST_DIR}/../../external/glfw/_install")
-# Make both prefixes visible. CMake will choose debug/release libs via imported targets.
-list(PREPEND CMAKE_PREFIX_PATH
-  "${GLFW_PREFIX}"
-  "${GLFW_PREFIX}/debug"
-)
-# glfw3 provides a config package named "glfw3" and imported target "glfw"
-# (some installs expose "glfw3::glfw3" or "glfw")
-find_package(glfw3 CONFIG REQUIRED)
-
-# ---------- Assimp (prebuilt/installed in ../../external/assimp/_install) ----------
-set(ASSIMP_PREFIX "${CMAKE_CURRENT_LIST_DIR}/../../external/assimp/_install")
-list(PREPEND CMAKE_PREFIX_PATH
-  "${ASSIMP_PREFIX}"
-  "${ASSIMP_PREFIX}/debug"
-)
-# assimp provides a config package and imported target "assimp::assimp"
-find_package(assimp CONFIG REQUIRED)
-
-# ---------- Cube Viewer Application ----------
+# -------------------- Sources --------------------
 set(SOURCES
   main.cpp
   app.cpp
@@ -39,6 +15,7 @@ set(SOURCES
   model_assimp.cpp
   model.h
   ../../external/glad/src/glad.c
+  stb_image_impl.cpp
 )
 
 if(WIN32)
@@ -52,13 +29,30 @@ target_include_directories(cube_viewer PRIVATE
   ../../external/glad/include
 )
 
-# Link GLFW and Assimp imported targets
-target_link_libraries(cube_viewer PRIVATE 
+# -------------------- vcpkg dependencies --------------------
+find_package(glfw3 CONFIG REQUIRED)
+find_package(assimp CONFIG REQUIRED)
+
+target_link_libraries(cube_viewer PRIVATE
   glfw
   assimp::assimp
 )
 
-# Platform-specific settings
+# stb is header-only; vcpkg may not provide a CMake package config for it.
+# Just add vcpkg include dir so <stb_image.h> resolves.
+if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+  target_include_directories(cube_viewer PRIVATE
+    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include"
+  )
+else()
+  set(VCPKG_ROOT "D:/WORK/external/vcpkg" CACHE PATH "Path to vcpkg root")
+  set(VCPKG_TRIPLET "x64-windows" CACHE STRING "vcpkg triplet")
+  target_include_directories(cube_viewer PRIVATE
+    "${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}/include"
+  )
+endif()
+
+# -------------------- Platform specifics --------------------
 if(WIN32)
   target_link_libraries(cube_viewer PRIVATE
     opengl32
@@ -82,8 +76,28 @@ else()
   )
 endif()
 
+# -------------------- Warnings --------------------
 if(MSVC)
   target_compile_options(cube_viewer PRIVATE /W4 /permissive-)
 else()
   target_compile_options(cube_viewer PRIVATE -Wall -Wextra)
 endif()
+
+if(0 AND WIN32)
+  set(COPY_RUNTIME_DEPS_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/cmake/copy_runtime_deps.cmake")
+
+  # Provide vcpkg bin dirs explicitly (handles the case where the script can't see toolchain vars)
+  set(_VCPKG_BIN "D:/WORK/external/vcpkg/installed/x64-windows/bin")
+  set(_VCPKG_DBG_BIN "D:/WORK/external/vcpkg/installed/x64-windows/debug/bin")
+
+  add_custom_command(TARGET cube_viewer POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+      -Dexe=$<TARGET_FILE:cube_viewer>
+      -Dout_dir=$<TARGET_FILE_DIR:cube_viewer>
+      -Dvcpkg_bin=${_VCPKG_BIN}
+      -Dvcpkg_debug_bin=${_VCPKG_DBG_BIN}
+      -P "${COPY_RUNTIME_DEPS_SCRIPT}"
+    VERBATIM
+  )
+endif()
+

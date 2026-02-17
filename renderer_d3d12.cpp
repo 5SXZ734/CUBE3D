@@ -30,7 +30,17 @@
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 
+#include "stb_image.h"
+
 static const UINT FRAME_COUNT = 2;
+
+// ==================== D3D12 Texture ====================
+struct D3D12Texture {
+    ComPtr<ID3D12Resource> resource;
+    D3D12_CPU_DESCRIPTOR_HANDLE srvHandle;
+    int width;
+    int height;
+};
 
 // ==================== Helper Functions (instead of d3dx12.h) ====================
 inline UINT CalcConstantBufferByteSize(UINT byteSize) {
@@ -867,7 +877,25 @@ public:
         }
     }
 
-    void drawMesh(uint32_t meshHandle) override {
+    uint32_t createTexture(const char* filepath) override {
+        // TODO: D3D12 texture loading requires descriptor heap setup
+        // For now, just log and return 0
+        std::fprintf(stderr, "D3D12 texture loading TODO: %s\n", filepath);
+        return 0;
+    }
+
+    void destroyTexture(uint32_t textureHandle) override {
+        (void)textureHandle;
+    }
+
+    void setUniformInt(uint32_t shaderHandle, const char* name, int value) override {
+        (void)shaderHandle;
+        (void)name;
+        (void)value;
+    }
+
+    void drawMesh(uint32_t meshHandle, uint32_t textureHandle = 0) override {
+        (void)textureHandle;
         auto meshIt = m_meshes.find(meshHandle);
         if (meshIt == m_meshes.end()) return;
 

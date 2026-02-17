@@ -22,12 +22,22 @@
 #include <unordered_map>
 #include <cstring>
 
+#include "stb_image.h"
+
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
+
+// ==================== D3D11 Texture ====================
+struct D3D11Texture {
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    int width;
+    int height;
+};
 
 // ==================== D3D11 Mesh ====================
 struct D3D11Mesh {
@@ -66,11 +76,14 @@ private:
     ComPtr<ID3D11DepthStencilView> m_dsv;
     ComPtr<ID3D11RasterizerState> m_rasterizerState;
     ComPtr<ID3D11DepthStencilState> m_depthStencilState;
+    ComPtr<ID3D11SamplerState> m_samplerState;
     
     std::unordered_map<uint32_t, D3D11Mesh> m_meshes;
     std::unordered_map<uint32_t, D3D11Shader> m_shaders;
+    std::unordered_map<uint32_t, D3D11Texture> m_textures;
     uint32_t m_nextMeshHandle;
     uint32_t m_nextShaderHandle;
+    uint32_t m_nextTextureHandle;
     uint32_t m_currentShader;
     
     int m_width;
@@ -215,6 +228,7 @@ public:
         : m_hwnd(nullptr)
         , m_nextMeshHandle(1)
         , m_nextShaderHandle(1)
+        , m_nextTextureHandle(1)
         , m_currentShader(0)
         , m_width(1280)
         , m_height(720)
@@ -545,16 +559,79 @@ public:
         }
     }
 
-    void drawMesh(uint32_t meshHandle) override {
+    uint32_t createTexture(const char* filepath) override {
+        int width, height, channels;
+        stbi_set_flip_vertically_on_load(false);
+        unsigned char* data = stbi_load(filepath, &width, &height, &channels, 4);
+        
+        if (!data) {
+            std::fprintf(stderr, "Failed to load texture: %s - %s\n", filepath, stbi_failure_reason());
+            return 0;
+        }
+
+        std::printf("Loaded texture: %s (%dx%d)\n", filepath, width, height);
+
+        D3D11Texture texture;
+        texture.width = width;
+        texture.height = height;
+
+        D3D11_TEXTURE2D_DESC texDesc = {};
+        texDesc.Width = width;
+        texDesc.Height = height;
+        texDesc.MipLevels = 0;
+        texDesc.ArraySize = 1;
+        texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        texDesc.SampleDesc.Count = 1;
+        texDesc.Usage = D3D11_USAGE_DEFAULT;
+        texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        texDesc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+
+        HRESULT hr = m_device->CreateTexture2D(&texDesc, nullptr, &texture.texture);
+        if (FAILED(hr)) {
+            stbi_image_free(data);
+            return 0;
+        }
+
+        m_context->UpdateSubresource(texture.texture.Get(), 0, nullptr, data, width * 4, 0);
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = texDesc.Format;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MipLevels = -1;
+
+        hr = m_device->CreateShaderResourceView(texture.texture.Get(), &srvDesc, &texture.srv);
+        if (FAILED(hr)) {
+            stbi_image_free(data);
+            return 0;
+        }
+
+        m_context->GenerateMips(texture.srv.Get());
+        stbi_image_free(data);
+
+        uint32_t handle = m_nextTextureHandle++;
+        m_textures[handle] = texture;
+        return handle;
+    }
+
+    void destroyTexture(uint32_t textureHandle) override {
+        m_textures.erase(textureHandle);
+    }
+
+    void setUniformInt(uint32_t shaderHandle, const char* name, int value) override {
+        (void)shaderHandle;
+        (void)name;
+        (void)value;
+    }
+
+    void drawMesh(uint32_t meshHandle, uint32_t textureHandle = 0) override {
         auto meshIt = m_meshes.find(meshHandle);
         if (meshIt == m_meshes.end()) return;
 
-        // Update constant buffer before drawing
+        // Update constant buffer
         auto shaderIt = m_shaders.find(m_currentShader);
         if (shaderIt != m_shaders.end()) {
             D3D11Shader& shader = shaderIt->second;
             
-            // Map and update constant buffer once with all data
             D3D11_MAPPED_SUBRESOURCE ms{};
             HRESULT hr = m_context->Map(shader.constantBuffer.Get(), 0, 
                                         D3D11_MAP_WRITE_DISCARD, 0, &ms);
@@ -564,25 +641,25 @@ public:
                 m_context->Unmap(shader.constantBuffer.Get(), 0);
             }
 
-            // Bind constant buffer
             m_context->VSSetConstantBuffers(0, 1, shader.constantBuffer.GetAddressOf());
             m_context->PSSetConstantBuffers(0, 1, shader.constantBuffer.GetAddressOf());
         }
 
-        D3D11Mesh& mesh = meshIt->second;
+        // Bind texture
+        if (textureHandle > 0) {
+            auto texIt = m_textures.find(textureHandle);
+            if (texIt != m_textures.end()) {
+                ID3D11ShaderResourceView* srv = texIt->second.srv.Get();
+                m_context->PSSetShaderResources(0, 1, &srv);
+            }
+        }
 
-        // Set vertex buffer
+        D3D11Mesh& mesh = meshIt->second;
         UINT stride = sizeof(Vertex);
         UINT offset = 0;
         m_context->IASetVertexBuffers(0, 1, mesh.vertexBuffer.GetAddressOf(), &stride, &offset);
-
-        // Set index buffer
         m_context->IASetIndexBuffer(mesh.indexBuffer.Get(), DXGI_FORMAT_R16_UINT, 0);
-
-        // Set primitive topology
         m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-        // Draw
         m_context->DrawIndexed(mesh.indexCount, 0, 0);
     }
 

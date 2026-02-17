@@ -25,6 +25,7 @@ struct Vertex {
     float px, py, pz;    // position
     float nx, ny, nz;    // normal
     float r, g, b, a;    // color
+    float u, v;          // texture coordinates
 };
 
 // ==================== Renderer Interface ====================
@@ -44,10 +45,14 @@ public:
     // Viewport
     virtual void setViewport(int width, int height) = 0;
     
-    // Mesh creation
+    // Mesh creation (with texture coordinates)
     virtual uint32_t createMesh(const Vertex* vertices, uint32_t vertexCount,
                                const uint16_t* indices, uint32_t indexCount) = 0;
     virtual void destroyMesh(uint32_t meshHandle) = 0;
+    
+    // Texture support
+    virtual uint32_t createTexture(const char* filepath) = 0;
+    virtual void destroyTexture(uint32_t textureHandle) = 0;
     
     // Shader/material
     virtual uint32_t createShader(const char* vertexSource, const char* fragmentSource) = 0;
@@ -57,9 +62,10 @@ public:
     // Uniforms
     virtual void setUniformMat4(uint32_t shaderHandle, const char* name, const Mat4& matrix) = 0;
     virtual void setUniformVec3(uint32_t shaderHandle, const char* name, const Vec3& vec) = 0;
+    virtual void setUniformInt(uint32_t shaderHandle, const char* name, int value) = 0;
     
     // Drawing
-    virtual void drawMesh(uint32_t meshHandle) = 0;
+    virtual void drawMesh(uint32_t meshHandle, uint32_t textureHandle = 0) = 0;
     
     // State
     virtual void setDepthTest(bool enable) = 0;

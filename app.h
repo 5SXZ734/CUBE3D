@@ -3,6 +3,8 @@
 #define APP_H
 
 #include "renderer.h"
+#include "model.h"
+#include <vector>
 
 // Forward declarations
 struct GLFWwindow;
@@ -13,8 +15,8 @@ public:
     CubeApp();
     ~CubeApp();
 
-    // Initialize with a specific renderer
-    bool initialize(RendererAPI api);
+    // Initialize with a specific renderer and optional model path
+    bool initialize(RendererAPI api, const char* modelPath = nullptr);
     void shutdown();
 
     // Main loop
@@ -30,6 +32,8 @@ public:
 private:
     void update(float deltaTime);
     void render();
+    bool createDefaultCube();
+    bool loadModel(const char* path);
 
     // Window
     GLFWwindow* m_window;
@@ -39,9 +43,17 @@ private:
     // Renderer
     IRenderer* m_renderer;
 
-    // Scene data
-    uint32_t m_cubeMesh;
+    // Scene data - can be either cube or loaded model
+    struct MeshData {
+        uint32_t meshHandle;
+        uint32_t textureHandle;
+    };
+    std::vector<MeshData> m_meshes;
     uint32_t m_shader;
+    
+    // Loaded model (if any)
+    Model m_model;
+    bool m_hasModel;
 
     // Camera/input state
     bool m_dragging;
