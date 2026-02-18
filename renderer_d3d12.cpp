@@ -168,8 +168,18 @@ VSOut VSMain(VSIn v)
 
 float4 PSMain(VSOut i) : SV_Target
 {
-    // DEBUG: Sample texture directly, return it
-    return gTex.Sample(gSampler, i.texCoord);
+    float3 L   = normalize(-uLightDir);
+    float  ndl = saturate(dot(normalize(i.nrmW), L));
+    float  diff = 0.18 + ndl * 0.82;
+
+    float4 baseColor;
+    if (uUseTexture > 0.5) {
+        baseColor = gTex.Sample(gSampler, i.texCoord);
+    } else {
+        baseColor = i.col;
+    }
+
+    return float4(baseColor.rgb * diff, baseColor.a);
 }
 )";
 
@@ -660,12 +670,14 @@ public:
         D3D12_ROOT_PARAMETER rootParams[3] = {};
         rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         rootParams[0].Descriptor.ShaderRegister = 0;
+        rootParams[0].Descriptor.RegisterSpace = 0;  // Explicit space
         rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
         D3D12_DESCRIPTOR_RANGE srvRange = {};
         srvRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         srvRange.NumDescriptors     = 1;
         srvRange.BaseShaderRegister = 0;
+        srvRange.RegisterSpace      = 0;  // Explicit space
         srvRange.OffsetInDescriptorsFromTableStart = 0;
 
         rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -680,6 +692,7 @@ public:
         sampler.AddressW       = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
         sampler.MaxLOD         = D3D12_FLOAT32_MAX;
         sampler.ShaderRegister = 0;
+        sampler.RegisterSpace  = 0;  // Explicit space
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
