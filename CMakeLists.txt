@@ -14,7 +14,7 @@ set(SOURCES
   renderer.h
   model_assimp.cpp
   model.h
-  ../../external/glad/src/glad.c
+  #../../external/glad/src/glad.c
   stb_image_impl.cpp
 )
 
@@ -26,14 +26,16 @@ add_executable(cube_viewer ${SOURCES})
 
 target_include_directories(cube_viewer PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
-  ../../external/glad/include
+  #../../external/glad/include
 )
 
 # -------------------- vcpkg dependencies --------------------
+find_package(glad CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(assimp CONFIG REQUIRED)
 
 target_link_libraries(cube_viewer PRIVATE
+  glad::glad
   glfw
   assimp::assimp
 )
