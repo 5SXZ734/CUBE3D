@@ -6,7 +6,9 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+
 #include "stb_image.h"
+#include "dds_loader.h"
 
 // ==================== OpenGL Texture ====================
 struct GLTexture {
@@ -278,18 +280,32 @@ public:
     }
 
     uint32_t createTexture(const char* filepath) override {
-        // Load image using stb_image
         int width, height, channels;
-        stbi_set_flip_vertically_on_load(true); // OpenGL expects bottom-left origin
-        unsigned char* data = stbi_load(filepath, &width, &height, &channels, 0);
+        unsigned char* data = nullptr;
+        
+        // Check if it's a DDS file
+        const char* ext = strrchr(filepath, '.');
+        if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0)) {
+            // Try DDS loader first
+            data = DDSLoader::Load(filepath, &width, &height, &channels);
+            if (data) {
+                std::printf("Loaded DDS texture: %s (%dx%d, %d channels)\n", filepath, width, height, channels);
+            }
+        }
+        
+        // Fall back to stb_image for other formats
+        if (!data) {
+            stbi_set_flip_vertically_on_load(true); // OpenGL expects bottom-left origin
+            data = stbi_load(filepath, &width, &height, &channels, 0);
+            if (data) {
+                std::printf("Loaded texture: %s (%dx%d, %d channels)\n", filepath, width, height, channels);
+            }
+        }
         
         if (!data) {
             std::fprintf(stderr, "Failed to load texture: %s\n", filepath);
-            std::fprintf(stderr, "STB Error: %s\n", stbi_failure_reason());
             return 0;
         }
-
-        std::printf("Loaded texture: %s (%dx%d, %d channels)\n", filepath, width, height, channels);
 
         // Create OpenGL texture
         GLTexture texture;
@@ -320,7 +336,11 @@ public:
         glBindTexture(GL_TEXTURE_2D, 0);
         
         // Free image data
-        stbi_image_free(data);
+        if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0)) {
+            delete[] data;  // DDS loader uses new[]
+        } else {
+            stbi_image_free(data);  // stb_image uses malloc
+        }
         
         // Store and return handle
         uint32_t handle = m_nextTextureHandle++;

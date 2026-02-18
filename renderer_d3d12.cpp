@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "stb_image.h"
+#include "dds_loader.h"
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -697,14 +698,30 @@ public:
         }
 
         int w, h, ch;
-        stbi_set_flip_vertically_on_load(false);
-        unsigned char* data = stbi_load(filepath, &w, &h, &ch, 4);
+        unsigned char* data = nullptr;
+        
+        // Check if DDS
+        const char* ext = strrchr(filepath, '.');
+        if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0)) {
+            data = DDSLoader::Load(filepath, &w, &h, &ch);
+            if (data) {
+                std::printf("Loaded DDS texture: %s %dx%d\n", filepath, w, h);
+            }
+        }
+        
+        // Fall back to stb_image
         if (!data) {
-            std::fprintf(stderr, "Texture load failed: %s (%s)\n",
-                         filepath, stbi_failure_reason());
+            stbi_set_flip_vertically_on_load(false);
+            data = stbi_load(filepath, &w, &h, &ch, 4);
+            if (data) {
+                std::printf("Loaded texture: %s %dx%d\n", filepath, w, h);
+            }
+        }
+        
+        if (!data) {
+            std::fprintf(stderr, "Texture load failed: %s\n", filepath);
             return 0;
         }
-        std::printf("Texture loaded: %s %dx%d\n", filepath, w, h);
 
         D3D12Texture tex;
         tex.width  = w;
@@ -732,7 +749,11 @@ public:
         uploadBuffer->Map(0, nullptr, &mapped);
         memcpy(mapped, data, uploadSize);
         uploadBuffer->Unmap(0, nullptr);
-        stbi_image_free(data);
+        
+        if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0))
+            delete[] data;
+        else
+            stbi_image_free(data);
 
         // Copy to GPU texture via command list
         waitForGpu();

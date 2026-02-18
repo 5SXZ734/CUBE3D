@@ -23,6 +23,7 @@
 #include <cstring>
 
 #include "stb_image.h"
+#include "dds_loader.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -581,15 +582,30 @@ public:
 
     uint32_t createTexture(const char* filepath) override {
         int width, height, channels;
-        stbi_set_flip_vertically_on_load(false);
-        unsigned char* data = stbi_load(filepath, &width, &height, &channels, 4);
+        unsigned char* data = nullptr;
+        
+        // Check if it's a DDS file
+        const char* ext = strrchr(filepath, '.');
+        if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0)) {
+            data = DDSLoader::Load(filepath, &width, &height, &channels);
+            if (data) {
+                std::printf("Loaded DDS texture: %s (%dx%d)\n", filepath, width, height);
+            }
+        }
+        
+        // Fall back to stb_image
+        if (!data) {
+            stbi_set_flip_vertically_on_load(false);
+            data = stbi_load(filepath, &width, &height, &channels, 4);
+            if (data) {
+                std::printf("Loaded texture: %s (%dx%d)\n", filepath, width, height);
+            }
+        }
         
         if (!data) {
-            std::fprintf(stderr, "Failed to load texture: %s - %s\n", filepath, stbi_failure_reason());
+            std::fprintf(stderr, "Failed to load texture: %s\n", filepath);
             return 0;
         }
-
-        std::printf("Loaded texture: %s (%dx%d)\n", filepath, width, height);
 
         D3D11Texture texture;
         texture.width = width;
@@ -608,7 +624,10 @@ public:
 
         HRESULT hr = m_device->CreateTexture2D(&texDesc, nullptr, &texture.texture);
         if (FAILED(hr)) {
-            stbi_image_free(data);
+            if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0))
+                delete[] data;
+            else
+                stbi_image_free(data);
             return 0;
         }
 
@@ -621,12 +640,19 @@ public:
 
         hr = m_device->CreateShaderResourceView(texture.texture.Get(), &srvDesc, &texture.srv);
         if (FAILED(hr)) {
-            stbi_image_free(data);
+            if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0))
+                delete[] data;
+            else
+                stbi_image_free(data);
             return 0;
         }
 
         m_context->GenerateMips(texture.srv.Get());
-        stbi_image_free(data);
+        
+        if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0))
+            delete[] data;
+        else
+            stbi_image_free(data);
 
         uint32_t handle = m_nextTextureHandle++;
         m_textures[handle] = texture;
