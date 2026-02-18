@@ -15,8 +15,8 @@ set(SOURCES
   renderer.h
   model_assimp.cpp
   model.h
-  #../../external/glad/src/glad.c
   stb_image_impl.cpp
+  texture_cache.h
 )
 
 if(WIN32)

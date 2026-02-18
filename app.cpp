@@ -133,6 +133,7 @@ CubeApp::~CubeApp() {
 
 void CubeApp::printStats() const {
     m_stats.print();
+    m_textureCache.printStats();
 }
 
 bool CubeApp::initialize(RendererAPI api, const char* modelPath) {
@@ -189,6 +190,10 @@ bool CubeApp::initialize(RendererAPI api, const char* modelPath) {
         glfwTerminate();
         return false;
     }
+    
+    // Initialize texture cache with renderer
+    m_textureCache.setRenderer(m_renderer);
+    LOG_DEBUG("Texture cache initialized");
 
     // Set initial viewport
     int fbW, fbH;
@@ -403,10 +408,16 @@ bool CubeApp::loadModel(const char* path) {
                 LOG_WARNING("Texture validation failed for mesh %zu, skipping", i);
             } else {
                 LOG_DEBUG("    Loading texture: %s", modelMesh.texturePath.c_str());
-                mesh.textureHandle = m_renderer->createTexture(modelMesh.texturePath.c_str());
+                
+                // Use texture cache to avoid duplicate loads
+                mesh.textureHandle = m_textureCache.getOrLoad(modelMesh.texturePath.c_str());
+                
                 if (mesh.textureHandle) {
                     if (m_showStats || m_debugMode) {
-                        m_stats.texturesLoaded++;
+                        // Only count unique textures in stats
+                        if (m_textureCache.getStats().cacheMisses == m_stats.texturesLoaded + 1) {
+                            m_stats.texturesLoaded++;
+                        }
                     }
                 } else {
                     LOG_WARNING("Failed to load texture: %s", modelMesh.texturePath.c_str());

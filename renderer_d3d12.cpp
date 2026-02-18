@@ -786,12 +786,6 @@ public:
 
         ID3D12DescriptorHeap* heaps[] = { m_cbvSrvHeap.Get() };
         m_commandList->SetDescriptorHeaps(1, heaps);
-        
-        static bool once = false;
-        if (!once) {
-            std::printf("D3D12: useShader called, handle %d\n", h);
-            once = true;
-        }
     }
 
     // ================================================================
@@ -819,10 +813,6 @@ public:
 
     // ================================================================
     uint32_t createTexture(const char* filepath) override {
-        static int textureCount = 0;
-        textureCount++;
-        std::printf("D3D12: Loading texture #%d: %s\n", textureCount, filepath);
-        
         if (m_nextSrvIndex >= (1 + MAX_TEXTURES)) {
             std::fprintf(stderr, "Texture limit reached (%d)\n", MAX_TEXTURES);
             return 0;
@@ -931,12 +921,9 @@ public:
         m_uploadCommandList->ResourceBarrier(1, &barrier);
 
         m_uploadCommandList->Close();
-        std::printf("D3D12: Texture #%d closed command list, about to execute...\n", textureCount);
         ID3D12CommandList* lists[] = { m_uploadCommandList.Get() };
         m_commandQueue->ExecuteCommandLists(1, lists);
-        std::printf("D3D12: Texture #%d executed, waiting for GPU...\n", textureCount);
         waitForGpu();
-        std::printf("D3D12: Texture #%d complete!\n", textureCount);
 
         // Create SRV
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};

@@ -5,6 +5,7 @@
 #include "renderer.h"
 #include "model.h"
 #include "debug.h"
+#include "texture_cache.h"
 #include <vector>
 
 // Forward declarations
@@ -49,6 +50,7 @@ private:
 
     // Renderer
     IRenderer* m_renderer;
+    TextureCache m_textureCache;
 
     // Scene data - can be either cube or loaded model
     struct MeshData {
