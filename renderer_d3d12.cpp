@@ -168,15 +168,8 @@ VSOut VSMain(VSIn v)
 
 float4 PSMain(VSOut i) : SV_Target
 {
-    float3 L   = normalize(-uLightDir);
-    float  ndl = saturate(dot(normalize(i.nrmW), L));
-    float  diff = 0.18 + ndl * 0.82;
-
-    float4 baseColor = (uUseTexture > 0.5)
-                       ? gTex.Sample(gSampler, i.texCoord)
-                       : i.col;
-
-    return float4(baseColor.rgb * diff, baseColor.a);
+    // DEBUG: Sample texture directly, return it
+    return gTex.Sample(gSampler, i.texCoord);
 }
 )";
 
@@ -195,8 +188,8 @@ private:
     ComPtr<ID3D12CommandAllocator>  m_commandAllocators[FRAME_COUNT];
     ComPtr<ID3D12GraphicsCommandList> m_commandList;
 
-    ComPtr<ID3D12Resource> m_constantBuffer;
-    UINT8* m_cbvDataBegin;
+    ComPtr<ID3D12Resource> m_constantBuffers[FRAME_COUNT];  // One per frame!
+    UINT8* m_cbvDataBegin[FRAME_COUNT];                     // Mapped pointers
 
     ComPtr<ID3D12Fence> m_fence;
     UINT64 m_fenceValues[FRAME_COUNT];
@@ -216,7 +209,7 @@ private:
     uint32_t m_nextShaderHandle  = 1;
     uint32_t m_nextTextureHandle = 1;
     uint32_t m_currentShader     = 0;
-    UINT     m_nextSrvIndex      = 1;  // 0 is for CBV
+    UINT     m_nextSrvIndex      = 2;  // Start at 2 (0=CBV, 1=dummy texture)
 
     int m_width  = 1280;
     int m_height = 720;
@@ -308,8 +301,11 @@ private:
     }
 
 public:
-    D3D12Renderer() : m_cbvDataBegin(nullptr), m_currentFenceValue(1), m_frameIndex(0) {
-        for (UINT i = 0; i < FRAME_COUNT; i++) m_fenceValues[i] = 0;
+    D3D12Renderer() : m_currentFenceValue(1), m_frameIndex(0) {
+        for (UINT i = 0; i < FRAME_COUNT; i++) {
+            m_fenceValues[i] = 0;
+            m_cbvDataBegin[i] = nullptr;
+        }
     }
 
     virtual ~D3D12Renderer() { shutdown(); }
@@ -398,24 +394,29 @@ public:
             IID_PPV_ARGS(&m_commandList));
         m_commandList->Close();
 
-        // Constant buffer (upload heap, persistently mapped)
+        // Constant buffers - one per frame for double buffering!
         {
             UINT cbSize = CalcConstantBufferByteSize(sizeof(CBData));
             D3D12_RESOURCE_DESC cbDesc = BufferDesc(cbSize);
             D3D12_HEAP_PROPERTIES uploadProps = UploadHeapProps();
-            m_device->CreateCommittedResource(&uploadProps, D3D12_HEAP_FLAG_NONE,
-                &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&m_constantBuffer));
+            
+            for (UINT i = 0; i < FRAME_COUNT; i++) {
+                m_device->CreateCommittedResource(&uploadProps, D3D12_HEAP_FLAG_NONE,
+                    &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                    IID_PPV_ARGS(&m_constantBuffers[i]));
 
+                D3D12_RANGE readRange = {0, 0};
+                m_constantBuffers[i]->Map(0, &readRange, reinterpret_cast<void**>(&m_cbvDataBegin[i]));
+            }
+
+            // Create CBV at descriptor index 0 for frame 0's constant buffer
+            // (We'll update the root CBV descriptor each frame)
             D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
-            cbvDesc.BufferLocation = m_constantBuffer->GetGPUVirtualAddress();
+            cbvDesc.BufferLocation = m_constantBuffers[0]->GetGPUVirtualAddress();
             cbvDesc.SizeInBytes    = cbSize;
 
             D3D12_CPU_DESCRIPTOR_HANDLE cbvHandle = m_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart();
             m_device->CreateConstantBufferView(&cbvDesc, cbvHandle);
-
-            D3D12_RANGE readRange = {0, 0};
-            m_constantBuffer->Map(0, &readRange, reinterpret_cast<void**>(&m_cbvDataBegin));
         }
 
         // Fence
@@ -423,6 +424,78 @@ public:
         m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
         std::printf("Direct3D 12 Renderer initialized\n");
+        
+        // Create 1x1 black dummy texture for when no texture is bound
+        // This occupies SRV index 1
+        {
+            unsigned char blackPixel[4] = {0, 0, 0, 255};  // Black, opaque
+            
+            D3D12_RESOURCE_DESC texDesc = Tex2DDesc(1, 1, DXGI_FORMAT_R8G8B8A8_UNORM);
+            D3D12_HEAP_PROPERTIES defaultProps = DefaultHeapProps();
+            ComPtr<ID3D12Resource> dummyTexture;
+            m_device->CreateCommittedResource(&defaultProps, D3D12_HEAP_FLAG_NONE,
+                &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                IID_PPV_ARGS(&dummyTexture));
+
+            // Upload
+            D3D12_RESOURCE_DESC uploadDesc = BufferDesc(256);  // 256 bytes for alignment
+            D3D12_HEAP_PROPERTIES uploadProps = UploadHeapProps();
+            ComPtr<ID3D12Resource> uploadBuffer;
+            m_device->CreateCommittedResource(&uploadProps, D3D12_HEAP_FLAG_NONE,
+                &uploadDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                IID_PPV_ARGS(&uploadBuffer));
+
+            void* mapped;
+            uploadBuffer->Map(0, nullptr, &mapped);
+            memcpy(mapped, blackPixel, 4);
+            uploadBuffer->Unmap(0, nullptr);
+
+            // Copy via command list
+            m_commandAllocators[0]->Reset();
+            m_commandList->Reset(m_commandAllocators[0].Get(), nullptr);
+
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+            footprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
+            footprint.Footprint.Width    = 1;
+            footprint.Footprint.Height   = 1;
+            footprint.Footprint.Depth    = 1;
+            footprint.Footprint.RowPitch = 256;
+
+            D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+            srcLoc.pResource = uploadBuffer.Get();
+            srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            srcLoc.PlacedFootprint = footprint;
+
+            D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+            dstLoc.pResource = dummyTexture.Get();
+            dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            dstLoc.SubresourceIndex = 0;
+
+            m_commandList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+
+            D3D12_RESOURCE_BARRIER barrier = TransitionBarrier(dummyTexture.Get(),
+                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            m_commandList->ResourceBarrier(1, &barrier);
+
+            m_commandList->Close();
+            ID3D12CommandList* lists[] = { m_commandList.Get() };
+            m_commandQueue->ExecuteCommandLists(1, lists);
+            waitForGpu();
+
+            // Create SRV at index 1 (index 0 is CBV)
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Texture2D.MipLevels = 1;
+
+            D3D12_CPU_DESCRIPTOR_HANDLE srvHandle = m_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart();
+            srvHandle.ptr += 1 * m_cbvSrvDescriptorSize;  // Index 1
+            m_device->CreateShaderResourceView(dummyTexture.Get(), &srvDesc, srvHandle);
+            
+            std::printf("Created dummy texture at SRV index 1\n");
+        }
+        
         return true;
     }
 
@@ -434,14 +507,19 @@ public:
         m_shaders.clear();
         m_textures.clear();
 
-        if (m_constantBuffer) m_constantBuffer->Unmap(0, nullptr);
+        for (UINT i = 0; i < FRAME_COUNT; i++) {
+            if (m_constantBuffers[i]) {
+                m_constantBuffers[i]->Unmap(0, nullptr);
+                m_constantBuffers[i].Reset();
+            }
+        }
+        
         if (m_fenceEvent) {
             CloseHandle(m_fenceEvent);
             m_fenceEvent = nullptr;
         }
-
+        
         m_fence.Reset();
-        m_constantBuffer.Reset();
         m_commandList.Reset();
         for (auto& ca : m_commandAllocators) ca.Reset();
         m_depthStencil.Reset();
@@ -569,9 +647,14 @@ public:
         D3D12Shader shader;
 
         ComPtr<ID3DBlob> vsBlob, psBlob;
-        if (!compileShader(g_hlslSrc, "VSMain", "vs_5_0", vsBlob) ||
-            !compileShader(g_hlslSrc, "PSMain", "ps_5_0", psBlob))
+        if (!compileShader(g_hlslSrc, "VSMain", "vs_5_0", vsBlob)) {
+            std::fprintf(stderr, "Failed to compile vertex shader\n");
             return 0;
+        }
+        if (!compileShader(g_hlslSrc, "PSMain", "ps_5_0", psBlob)) {
+            std::fprintf(stderr, "Failed to compile pixel shader\n");
+            return 0;
+        }
 
         // Root signature: [0] = CBV(b0), [1] = SRV(t0), [2] = Sampler(s0)
         D3D12_ROOT_PARAMETER rootParams[3] = {};
@@ -607,10 +690,22 @@ public:
         rsDesc.Flags             = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
         ComPtr<ID3DBlob> signature, error;
-        D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+        HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1,
                                    &signature, &error);
-        m_device->CreateRootSignature(0, signature->GetBufferPointer(),
+        if (FAILED(hr)) {
+            if (error) {
+                std::fprintf(stderr, "Root signature serialization failed: %s\n",
+                           (const char*)error->GetBufferPointer());
+            }
+            return 0;
+        }
+        
+        hr = m_device->CreateRootSignature(0, signature->GetBufferPointer(),
             signature->GetBufferSize(), IID_PPV_ARGS(&shader.rootSignature));
+        if (FAILED(hr)) {
+            std::fprintf(stderr, "CreateRootSignature failed: 0x%08X\n", hr);
+            return 0;
+        }
 
         // Input layout
         D3D12_INPUT_ELEMENT_DESC layout[] = {
@@ -641,7 +736,13 @@ public:
         psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
         psoDesc.SampleDesc.Count = 1;
 
-        m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&shader.pipelineState));
+        hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&shader.pipelineState));
+        if (FAILED(hr)) {
+            std::fprintf(stderr, "CreateGraphicsPipelineState failed: 0x%08X\n", hr);
+            return 0;
+        }
+        
+        std::printf("D3D12: Shader created successfully\n");
 
         shader.cbData.mvp        = XMMatrixIdentity();
         shader.cbData.world      = XMMatrixIdentity();
@@ -665,6 +766,12 @@ public:
 
         ID3D12DescriptorHeap* heaps[] = { m_cbvSrvHeap.Get() };
         m_commandList->SetDescriptorHeaps(1, heaps);
+        
+        static bool once = false;
+        if (!once) {
+            std::printf("D3D12: useShader called, handle %d\n", h);
+            once = true;
+        }
     }
 
     // ================================================================
@@ -705,16 +812,18 @@ public:
         if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0)) {
             data = DDSLoader::Load(filepath, &w, &h, &ch);
             if (data) {
-                std::printf("Loaded DDS texture: %s %dx%d\n", filepath, w, h);
+                std::printf("Loaded DDS texture: %s %dx%d (%d channels)\n", filepath, w, h, ch);
             }
         }
         
-        // Fall back to stb_image
+        // Fall back to stb_image - FORCE 4 channels (RGBA)
         if (!data) {
             stbi_set_flip_vertically_on_load(false);
-            data = stbi_load(filepath, &w, &h, &ch, 4);
+            data = stbi_load(filepath, &w, &h, &ch, 4);  // Force RGBA
             if (data) {
-                std::printf("Loaded texture: %s %dx%d\n", filepath, w, h);
+                std::printf("Loaded texture: %s %dx%d (original %d channels, forced to 4)\n", 
+                           filepath, w, h, ch);
+                ch = 4;  // We forced it to 4
             }
         }
         
@@ -722,6 +831,8 @@ public:
             std::fprintf(stderr, "Texture load failed: %s\n", filepath);
             return 0;
         }
+        
+        std::printf("D3D12: Creating texture %dx%d, SRV index %d\n", w, h, m_nextSrvIndex);
 
         D3D12Texture tex;
         tex.width  = w;
@@ -735,8 +846,11 @@ public:
             &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
             IID_PPV_ARGS(&tex.resource));
 
-        // Upload buffer
-        UINT64 uploadSize = w * h * 4;
+        // D3D12 requires 256-byte aligned row pitch for texture uploads
+        UINT rowPitch = (w * 4 + 255) & ~255;  // Align to 256 bytes
+        UINT64 uploadSize = rowPitch * h;
+        
+        // Upload buffer with aligned size
         D3D12_RESOURCE_DESC uploadDesc = BufferDesc(uploadSize);
         D3D12_HEAP_PROPERTIES uploadProps = UploadHeapProps();
         ComPtr<ID3D12Resource> uploadBuffer;
@@ -744,10 +858,13 @@ public:
             &uploadDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
             IID_PPV_ARGS(&uploadBuffer));
 
-        // Copy data to upload buffer
+        // Copy data to upload buffer with row padding
         void* mapped;
         uploadBuffer->Map(0, nullptr, &mapped);
-        memcpy(mapped, data, uploadSize);
+        unsigned char* dst = (unsigned char*)mapped;
+        for (int y = 0; y < h; y++) {
+            memcpy(dst + y * rowPitch, data + y * w * 4, w * 4);
+        }
         uploadBuffer->Unmap(0, nullptr);
         
         if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0))
@@ -765,7 +882,7 @@ public:
         footprint.Footprint.Width    = w;
         footprint.Footprint.Height   = h;
         footprint.Footprint.Depth    = 1;
-        footprint.Footprint.RowPitch = w * 4;
+        footprint.Footprint.RowPitch = rowPitch;  // Must be 256-byte aligned!
 
         D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
         srcLoc.pResource        = uploadBuffer.Get();
@@ -817,25 +934,57 @@ public:
         auto meshIt = m_meshes.find(meshHandle);
         if (meshIt == m_meshes.end()) return;
 
-        // Update CB
+        // Update CB for current frame
         auto shIt = m_shaders.find(m_currentShader);
         if (shIt != m_shaders.end()) {
             D3D12Shader& sh = shIt->second;
             sh.cbData.useTexture = (textureHandle > 0) ? 1.0f : 0.0f;
-            memcpy(m_cbvDataBegin, &sh.cbData, sizeof(CBData));
+            
+            static int debugCount = 0;
+            if (debugCount < 5) {
+                std::printf("D3D12 drawMesh #%d:\n", debugCount);
+                std::printf("  Frame: %d, Texture handle: %d, useTexture: %f\n", 
+                           m_frameIndex, textureHandle, sh.cbData.useTexture);
+                std::printf("  MVP[0]: %f, World[0]: %f, LightDir: (%f,%f,%f)\n",
+                           sh.cbData.mvp.r[0].m128_f32[0],
+                           sh.cbData.world.r[0].m128_f32[0],
+                           sh.cbData.lightDir.x, sh.cbData.lightDir.y, sh.cbData.lightDir.z);
+                debugCount++;
+            }
+            
+            memcpy(m_cbvDataBegin[m_frameIndex], &sh.cbData, sizeof(CBData));
+            
+            // Bind the current frame's constant buffer
             m_commandList->SetGraphicsRootConstantBufferView(0,
-                m_constantBuffer->GetGPUVirtualAddress());
+                m_constantBuffers[m_frameIndex]->GetGPUVirtualAddress());
         }
 
-        // Bind texture SRV
+        // Bind texture SRV (or dummy at index 1 if no texture)
+        D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = m_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
+        
         if (textureHandle > 0) {
             auto texIt = m_textures.find(textureHandle);
             if (texIt != m_textures.end()) {
-                D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = m_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
                 srvGpu.ptr += texIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
-                m_commandList->SetGraphicsRootDescriptorTable(1, srvGpu);
+                
+                static bool once = false;
+                if (!once) {
+                    std::printf("D3D12 drawMesh: Binding texture handle %d, SRV index %d\n",
+                               textureHandle, texIt->second.srvDescriptorIndex);
+                    once = true;
+                }
+            } else {
+                std::fprintf(stderr, "D3D12 drawMesh: Texture handle %d not found!\n", textureHandle);
+                // Fall back to dummy texture at index 1
+                srvGpu.ptr += 1 * m_cbvSrvDescriptorSize;
             }
+        } else {
+            // No texture - use dummy black texture at index 1
+            srvGpu.ptr += 1 * m_cbvSrvDescriptorSize;
         }
+        
+        // Always set descriptor table - D3D12 requires it
+        m_commandList->SetGraphicsRootDescriptorTable(1, srvGpu);
 
         D3D12Mesh& mesh = meshIt->second;
         m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
