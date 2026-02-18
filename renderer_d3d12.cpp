@@ -168,18 +168,8 @@ VSOut VSMain(VSIn v)
 
 float4 PSMain(VSOut i) : SV_Target
 {
-    float3 L   = normalize(-uLightDir);
-    float  ndl = saturate(dot(normalize(i.nrmW), L));
-    float  diff = 0.18 + ndl * 0.82;
-
-    float4 baseColor;
-    if (uUseTexture > 0.5) {
-        baseColor = gTex.Sample(gSampler, i.texCoord);
-    } else {
-        baseColor = i.col;
-    }
-
-    return float4(baseColor.rgb * diff, baseColor.a);
+    // DEBUG: Sample texture directly, return it
+    return gTex.Sample(gSampler, i.texCoord);
 }
 )";
 
@@ -197,6 +187,10 @@ private:
     ComPtr<ID3D12Resource>          m_depthStencil;
     ComPtr<ID3D12CommandAllocator>  m_commandAllocators[FRAME_COUNT];
     ComPtr<ID3D12GraphicsCommandList> m_commandList;
+    
+    // Dedicated command list/allocator for uploads during initialization
+    ComPtr<ID3D12CommandAllocator> m_uploadAllocator;
+    ComPtr<ID3D12GraphicsCommandList> m_uploadCommandList;
 
     ComPtr<ID3D12Resource> m_constantBuffers[FRAME_COUNT];  // One per frame!
     UINT8* m_cbvDataBegin[FRAME_COUNT];                     // Mapped pointers
@@ -403,6 +397,14 @@ public:
             m_commandAllocators[m_frameIndex].Get(), nullptr,
             IID_PPV_ARGS(&m_commandList));
         m_commandList->Close();
+        
+        // Create dedicated upload command list for init-time resource uploads
+        m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+            IID_PPV_ARGS(&m_uploadAllocator));
+        m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+            m_uploadAllocator.Get(), nullptr,
+            IID_PPV_ARGS(&m_uploadCommandList));
+        m_uploadCommandList->Close();
 
         // Constant buffers - one per frame for double buffering!
         {
@@ -460,9 +462,9 @@ public:
             memcpy(mapped, blackPixel, 4);
             uploadBuffer->Unmap(0, nullptr);
 
-            // Copy via command list
-            m_commandAllocators[0]->Reset();
-            m_commandList->Reset(m_commandAllocators[0].Get(), nullptr);
+            // Copy via command list (use dedicated upload command list)
+            m_uploadAllocator->Reset();
+            m_uploadCommandList->Reset(m_uploadAllocator.Get(), nullptr);
 
             D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
             footprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -481,14 +483,14 @@ public:
             dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
             dstLoc.SubresourceIndex = 0;
 
-            m_commandList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+            m_uploadCommandList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
 
             D3D12_RESOURCE_BARRIER barrier = TransitionBarrier(dummyTexture.Get(),
                 D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            m_commandList->ResourceBarrier(1, &barrier);
+            m_uploadCommandList->ResourceBarrier(1, &barrier);
 
-            m_commandList->Close();
-            ID3D12CommandList* lists[] = { m_commandList.Get() };
+            m_uploadCommandList->Close();
+            ID3D12CommandList* lists[] = { m_uploadCommandList.Get() };
             m_commandQueue->ExecuteCommandLists(1, lists);
             waitForGpu();
 
@@ -530,6 +532,8 @@ public:
         }
         
         m_fence.Reset();
+        m_uploadCommandList.Reset();
+        m_uploadAllocator.Reset();
         m_commandList.Reset();
         for (auto& ca : m_commandAllocators) ca.Reset();
         m_depthStencil.Reset();
@@ -544,6 +548,12 @@ public:
 
     // ================================================================
     void beginFrame() override {
+        // Wait for this frame's allocator to be free before resetting it
+        if (m_fence->GetCompletedValue() < m_fenceValues[m_frameIndex]) {
+            m_fence->SetEventOnCompletion(m_fenceValues[m_frameIndex], m_fenceEvent);
+            WaitForSingleObject(m_fenceEvent, INFINITE);
+        }
+        
         m_commandAllocators[m_frameIndex]->Reset();
         m_commandList->Reset(m_commandAllocators[m_frameIndex].Get(), nullptr);
 
@@ -670,14 +680,12 @@ public:
         D3D12_ROOT_PARAMETER rootParams[3] = {};
         rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         rootParams[0].Descriptor.ShaderRegister = 0;
-        rootParams[0].Descriptor.RegisterSpace = 0;  // Explicit space
         rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
         D3D12_DESCRIPTOR_RANGE srvRange = {};
         srvRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         srvRange.NumDescriptors     = 1;
         srvRange.BaseShaderRegister = 0;
-        srvRange.RegisterSpace      = 0;  // Explicit space
         srvRange.OffsetInDescriptorsFromTableStart = 0;
 
         rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -692,7 +700,6 @@ public:
         sampler.AddressW       = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
         sampler.MaxLOD         = D3D12_FLOAT32_MAX;
         sampler.ShaderRegister = 0;
-        sampler.RegisterSpace  = 0;  // Explicit space
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
@@ -812,6 +819,10 @@ public:
 
     // ================================================================
     uint32_t createTexture(const char* filepath) override {
+        static int textureCount = 0;
+        textureCount++;
+        std::printf("D3D12: Loading texture #%d: %s\n", textureCount, filepath);
+        
         if (m_nextSrvIndex >= (1 + MAX_TEXTURES)) {
             std::fprintf(stderr, "Texture limit reached (%d)\n", MAX_TEXTURES);
             return 0;
@@ -885,10 +896,16 @@ public:
         else
             stbi_image_free(data);
 
-        // Copy to GPU texture via command list
-        waitForGpu();
-        m_commandAllocators[m_frameIndex]->Reset();
-        m_commandList->Reset(m_commandAllocators[m_frameIndex].Get(), nullptr);
+        // Copy to GPU texture via dedicated upload command list
+        // Wait for any previous upload to complete before resetting
+        if (m_currentFenceValue > 0) {
+            if (m_fence->GetCompletedValue() < m_currentFenceValue) {
+                m_fence->SetEventOnCompletion(m_currentFenceValue, m_fenceEvent);
+                WaitForSingleObject(m_fenceEvent, INFINITE);
+            }
+        }
+        m_uploadAllocator->Reset();
+        m_uploadCommandList->Reset(m_uploadAllocator.Get(), nullptr);
 
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
         footprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -907,16 +924,19 @@ public:
         dstLoc.Type      = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         dstLoc.SubresourceIndex = 0;
 
-        m_commandList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+        m_uploadCommandList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
 
         D3D12_RESOURCE_BARRIER barrier = TransitionBarrier(tex.resource.Get(),
             D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        m_commandList->ResourceBarrier(1, &barrier);
+        m_uploadCommandList->ResourceBarrier(1, &barrier);
 
-        m_commandList->Close();
-        ID3D12CommandList* lists[] = { m_commandList.Get() };
+        m_uploadCommandList->Close();
+        std::printf("D3D12: Texture #%d closed command list, about to execute...\n", textureCount);
+        ID3D12CommandList* lists[] = { m_uploadCommandList.Get() };
         m_commandQueue->ExecuteCommandLists(1, lists);
+        std::printf("D3D12: Texture #%d executed, waiting for GPU...\n", textureCount);
         waitForGpu();
+        std::printf("D3D12: Texture #%d complete!\n", textureCount);
 
         // Create SRV
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
