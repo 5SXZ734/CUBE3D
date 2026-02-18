@@ -4,6 +4,7 @@
 
 #include "renderer.h"
 #include "model.h"
+#include "debug.h"
 #include <vector>
 
 // Forward declarations
@@ -28,6 +29,12 @@ public:
     void onCursorPos(double x, double y);
     void onScroll(double xoffset, double yoffset);
     void onKey(int key, int scancode, int action, int mods);
+    
+    // Debug/Stats control
+    void setDebugMode(bool enabled) { m_debugMode = enabled; }
+    void setStrictValidation(bool enabled) { m_strictValidation = enabled; }
+    void setShowStats(bool enabled) { m_showStats = enabled; }
+    void printStats() const;
 
 private:
     void update(float deltaTime);
@@ -66,6 +73,12 @@ private:
     // Timing
     double m_lastFrameTime;
     double m_startTime;
+    
+    // Debug and stats
+    bool m_debugMode;
+    bool m_strictValidation;
+    bool m_showStats;
+    PerformanceStats m_stats;
 };
 
 #endif // APP_H

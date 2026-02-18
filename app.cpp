@@ -1,5 +1,6 @@
 // app.cpp - Application logic implementation
 #include "app.h"
+#include "debug.h"
 #include <GLFW/glfw3.h>
 #include <cstdio>
 #include <cmath>
@@ -121,16 +122,24 @@ CubeApp::CubeApp()
     , m_distance(3.5f)
     , m_lastFrameTime(0.0)
     , m_startTime(0.0)
+    , m_debugMode(false)
+    , m_strictValidation(false)
+    , m_showStats(false)
 {}
 
 CubeApp::~CubeApp() {
     shutdown();
 }
 
+void CubeApp::printStats() const {
+    m_stats.print();
+}
+
 bool CubeApp::initialize(RendererAPI api, const char* modelPath) {
+    LOG_DEBUG("Initializing GLFW...");
     // Initialize GLFW
     if (!glfwInit()) {
-        std::fprintf(stderr, "Failed to initialize GLFW\n");
+        LOG_ERROR("Failed to initialize GLFW");
         return false;
     }
 
@@ -143,9 +152,10 @@ bool CubeApp::initialize(RendererAPI api, const char* modelPath) {
     }
 
     // Create window
+    LOG_DEBUG("Creating window (%dx%d)...", m_width, m_height);
     m_window = glfwCreateWindow(m_width, m_height, "Model Viewer", nullptr, nullptr);
     if (!m_window) {
-        std::fprintf(stderr, "Failed to create window\n");
+        LOG_ERROR("Failed to create window");
         glfwTerminate();
         return false;
     }
@@ -162,16 +172,17 @@ bool CubeApp::initialize(RendererAPI api, const char* modelPath) {
     glfwSetKeyCallback(m_window, glfw_key_callback);
 
     // Create renderer
+    LOG_DEBUG("Creating renderer...");
     m_renderer = createRenderer(api);
     if (!m_renderer) {
-        std::fprintf(stderr, "Failed to create renderer\n");
+        LOG_ERROR("Failed to create renderer");
         glfwDestroyWindow(m_window);
         glfwTerminate();
         return false;
     }
 
     if (!m_renderer->initialize(m_window)) {
-        std::fprintf(stderr, "Failed to initialize renderer\n");
+        LOG_ERROR("Failed to initialize renderer");
         delete m_renderer;
         m_renderer = nullptr;
         glfwDestroyWindow(m_window);
@@ -187,7 +198,7 @@ bool CubeApp::initialize(RendererAPI api, const char* modelPath) {
     // Load model or create default cube
     if (modelPath != nullptr) {
         if (!loadModel(modelPath)) {
-            std::fprintf(stderr, "Failed to load model, using default cube\n");
+            LOG_WARNING("Failed to load model, using default cube");
             if (!createDefaultCube()) {
                 return false;
             }
@@ -250,7 +261,12 @@ void main()
 }
 )";
 
+    LOG_DEBUG("Creating shader...");
     m_shader = m_renderer->createShader(vsSrc, fsSrc);
+    if (!m_shader) {
+        LOG_ERROR("Failed to create shader");
+        return false;
+    }
 
     // Set render state
     m_renderer->setDepthTest(true);
@@ -259,9 +275,9 @@ void main()
     m_startTime = glfwGetTime();
     m_lastFrameTime = m_startTime;
 
-    std::printf("Application initialized successfully\n");
+    LOG_DEBUG("Application initialization complete");
     if (m_hasModel) {
-        std::printf("Loaded model with %zu meshes\n", m_meshes.size());
+        LOG_INFO("Loaded model with %zu meshes", m_meshes.size());
     }
     return true;
 }
@@ -291,6 +307,8 @@ void CubeApp::shutdown() {
 
 void CubeApp::run() {
     while (!glfwWindowShouldClose(m_window)) {
+        double frameStart = glfwGetTime();
+        
         glfwPollEvents();
 
         double currentTime = glfwGetTime();
@@ -299,23 +317,44 @@ void CubeApp::run() {
 
         update(deltaTime);
         render();
+        
+        // Update performance stats
+        if (m_showStats || m_debugMode) {
+            double frameEnd = glfwGetTime();
+            double frameTime = frameEnd - frameStart;
+            m_stats.updateFrameTime(frameTime);
+        }
     }
 }
 
 void CubeApp::update(float deltaTime) {
+    (void)deltaTime;  // Unused currently
     // Application logic updates go here
 }
 
 bool CubeApp::loadModel(const char* path) {
-    std::printf("Loading model: %s\n", path);
+    LOG_INFO("Loading model: %s", path);
+    
+    // Validate file if in strict mode
+    if (m_strictValidation && !FileValidator::validateModelPath(path)) {
+        LOG_ERROR("Model file validation failed");
+        return false;
+    }
     
     if (!ModelLoader::LoadXFile(path, m_model)) {
-        std::fprintf(stderr, "Failed to load model from: %s\n", path);
+        LOG_ERROR("Failed to load model from: %s", path);
         return false;
     }
 
+    LOG_DEBUG("Model loaded: %zu meshes", m_model.meshes.size());
+
     // Upload meshes to renderer
-    for (auto& modelMesh : m_model.meshes) {
+    for (size_t i = 0; i < m_model.meshes.size(); i++) {
+        auto& modelMesh = m_model.meshes[i];
+        
+        LOG_DEBUG("  Mesh %zu: %zu vertices, %zu indices", 
+                 i, modelMesh.vertices.size(), modelMesh.indices.size());
+        
         // Convert ModelVertex to Vertex
         std::vector<Vertex> vertices;
         vertices.reserve(modelMesh.vertices.size());
@@ -335,19 +374,43 @@ bool CubeApp::loadModel(const char* path) {
         for (uint32_t idx : modelMesh.indices) {
             indices.push_back((uint16_t)idx);
         }
+        
+        // Validate mesh if strict mode
+        if (m_strictValidation) {
+            if (!MeshValidator::validate(vertices.data(), (uint32_t)vertices.size(),
+                                        indices.data(), (uint32_t)indices.size())) {
+                LOG_ERROR("Mesh %zu validation failed", i);
+                return false;
+            }
+        }
 
         MeshData mesh;
         mesh.meshHandle = m_renderer->createMesh(
-            vertices.data(), vertices.size(),
-            indices.data(), indices.size()
+            vertices.data(), (uint32_t)vertices.size(),
+            indices.data(), (uint32_t)indices.size()
         );
+        
+        // Update stats
+        if (m_showStats || m_debugMode) {
+            m_stats.meshesLoaded++;
+            m_stats.meshMemoryKB += ((uint32_t)vertices.size() * sizeof(Vertex) + (uint32_t)indices.size() * sizeof(uint16_t)) / 1024;
+        }
 
         // Load texture if present
         mesh.textureHandle = 0;
         if (!modelMesh.texturePath.empty()) {
-            mesh.textureHandle = m_renderer->createTexture(modelMesh.texturePath.c_str());
-            if (mesh.textureHandle) {
-                std::printf("Loaded texture: %s\n", modelMesh.texturePath.c_str());
+            if (m_strictValidation && !FileValidator::validateTexturePath(modelMesh.texturePath.c_str())) {
+                LOG_WARNING("Texture validation failed for mesh %zu, skipping", i);
+            } else {
+                LOG_DEBUG("    Loading texture: %s", modelMesh.texturePath.c_str());
+                mesh.textureHandle = m_renderer->createTexture(modelMesh.texturePath.c_str());
+                if (mesh.textureHandle) {
+                    if (m_showStats || m_debugMode) {
+                        m_stats.texturesLoaded++;
+                    }
+                } else {
+                    LOG_WARNING("Failed to load texture: %s", modelMesh.texturePath.c_str());
+                }
             }
         }
 
@@ -355,11 +418,12 @@ bool CubeApp::loadModel(const char* path) {
     }
 
     m_hasModel = true;
+    LOG_INFO("Model loaded successfully: %zu meshes", m_meshes.size());
     return true;
 }
 
 bool CubeApp::createDefaultCube() {
-    std::printf("Creating default cube\n");
+    LOG_DEBUG("Creating default cube");
     
     // Create cube mesh (24 verts, 36 indices) with texture coordinates
     const Vertex verts[] = {
@@ -436,6 +500,12 @@ void CubeApp::render() {
         
         // Draw mesh with texture (if any)
         m_renderer->drawMesh(mesh.meshHandle, mesh.textureHandle);
+        
+        // Track stats
+        if (m_showStats || m_debugMode) {
+            m_stats.drawCalls++;
+            m_stats.meshesDrawn++;
+        }
     }
 
     m_renderer->endFrame();
@@ -449,6 +519,7 @@ void CubeApp::onFramebufferSize(int width, int height) {
 }
 
 void CubeApp::onMouseButton(int button, int action, int mods) {
+    (void)mods;  // Unused
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
         if (action == GLFW_PRESS) {
             m_dragging = true;
@@ -476,11 +547,14 @@ void CubeApp::onCursorPos(double x, double y) {
 }
 
 void CubeApp::onScroll(double xoffset, double yoffset) {
+    (void)xoffset;  // Unused
     m_distance -= (float)yoffset * 0.25f;
     m_distance = std::clamp(m_distance, 1.5f, 12.0f);
 }
 
 void CubeApp::onKey(int key, int scancode, int action, int mods) {
+    (void)scancode;  // Unused
+    (void)mods;      // Unused
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
         glfwSetWindowShouldClose(m_window, 1);
     }

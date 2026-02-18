@@ -10,6 +10,7 @@ set(SOURCES
   main.cpp
   app.cpp
   app.h
+  debug.h
   renderer_opengl.cpp
   renderer.h
   model_assimp.cpp
