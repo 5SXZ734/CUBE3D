@@ -104,6 +104,7 @@ private:
     // Timing
     double m_lastFrameTime;
     double m_startTime;
+    float m_deltaTime;  // Delta time for current frame
     
     // Debug and stats
     bool m_debugMode;

@@ -148,6 +148,7 @@ CubeApp::CubeApp()
     , m_shiftPressed(false)
     , m_lastFrameTime(0.0)
     , m_startTime(0.0)
+    , m_deltaTime(0.0f)
     , m_debugMode(false)
     , m_strictValidation(false)
     , m_showStats(false)
@@ -354,6 +355,7 @@ void CubeApp::run() {
         double currentTime = glfwGetTime();
         float deltaTime = (float)(currentTime - m_lastFrameTime);
         m_lastFrameTime = currentTime;
+        m_deltaTime = deltaTime;  // Store for use in render()
 
         update(deltaTime);
         render();
@@ -531,9 +533,8 @@ void CubeApp::render() {
     // Render in scene mode or single object mode
     if (m_useSceneMode && m_hasModel) {
         // Scene mode: FPS camera controls
-        // Update FPS camera
-        float deltaTime = (float)(glfwGetTime() - m_lastFrameTime);
-        updateFPSCamera(deltaTime);
+        // Update FPS camera using deltaTime from main loop
+        updateFPSCamera(m_deltaTime);
         
         // Build view matrix from FPS camera
         Vec3 target = {
@@ -613,26 +614,29 @@ void CubeApp::onFramebufferSize(int width, int height) {
 void CubeApp::onMouseButton(int button, int action, int mods) {
     (void)mods;  // Unused
     
-    if (m_useSceneMode) {
-        // In scene mode, capture mouse for FPS look
-        // Mouse is always captured in scene mode
-        return;
-    }
-    
-    // Single object mode: drag to rotate
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
         if (action == GLFW_PRESS) {
             m_dragging = true;
             glfwGetCursorPos(m_window, &m_lastX, &m_lastY);
+            if (m_useSceneMode) {
+                m_lastMouseX = m_lastX;
+                m_lastMouseY = m_lastY;
+                m_firstMouse = false;  // Reset first mouse flag
+            }
         } else if (action == GLFW_RELEASE) {
             m_dragging = false;
+            if (m_useSceneMode) {
+                m_firstMouse = true;  // Reset for next drag
+            }
         }
     }
 }
 
 void CubeApp::onCursorPos(double x, double y) {
     if (m_useSceneMode) {
-        // FPS camera look in scene mode
+        // FPS camera look in scene mode - only when left button pressed
+        if (!m_dragging) return;  // Only look when dragging
+        
         if (m_firstMouse) {
             m_lastMouseX = x;
             m_lastMouseY = y;
@@ -709,7 +713,7 @@ void CubeApp::onKey(int key, int scancode, int action, int mods) {
         
         if (m_useSceneMode) {
             LOG_INFO("Scene mode ENABLED - FPS camera controls");
-            LOG_INFO("WASD to move, Mouse to look, Space/Shift for up/down, Shift to sprint");
+            LOG_INFO("WASD to move, Left-click + drag to look, Space/Shift for up/down");
             LOG_INFO("Press 'B' to toggle background, 'G' to toggle ground");
             
             if (m_hasModel) {
@@ -940,6 +944,13 @@ void CubeApp::updateFPSCamera(float deltaTime) {
     // Handle movement input
     float speed = m_moveSpeed * deltaTime;
     if (m_shiftPressed) speed *= 2.0f;  // Sprint
+    
+    static int debugFrames = 0;
+    if (debugFrames < 10 && (m_wPressed || m_aPressed || m_sPressed || m_dPressed)) {
+        printf("FPS Movement: W=%d A=%d S=%d D=%d, speed=%.2f, deltaTime=%.4f\n", 
+               m_wPressed, m_aPressed, m_sPressed, m_dPressed, speed, deltaTime);
+        debugFrames++;
+    }
     
     if (m_wPressed) {  // Forward
         m_cameraPos.x += m_cameraForward.x * speed;

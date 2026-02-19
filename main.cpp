@@ -129,8 +129,8 @@ int main(int argc, char** argv) {
     
     LOG_INFO("Application initialized successfully");
     LOG_INFO("Press T to toggle scene mode (100 airplanes with FPS camera)");
-    LOG_INFO("FPS Mode: WASD to move, Mouse to look, Space/Shift for up/down");
-    LOG_INFO("Press B for background toggle, G for ground toggle, ESC to exit");
+    LOG_INFO("FPS Mode: WASD to move, Left-click + drag to look, Space/Shift up/down");
+    LOG_INFO("Press B for background, G for ground, ESC to exit");
     
     app.run();
     
