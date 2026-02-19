@@ -135,6 +135,8 @@ CubeApp::CubeApp()
     , m_debugMode(false)
     , m_strictValidation(false)
     , m_showStats(false)
+    , m_groundMesh(0)
+    , m_showGround(true)
 {}
 
 CubeApp::~CubeApp() {
@@ -293,6 +295,9 @@ void main()
 
     m_startTime = glfwGetTime();
     m_lastFrameTime = m_startTime;
+    
+    // Create ground plane for scene mode
+    createGroundPlane();
 
     LOG_DEBUG("Application initialization complete");
     if (m_hasModel) {
@@ -532,6 +537,21 @@ void CubeApp::render() {
         // So we just set view-projection once here for reference
         m_renderer->setUniformMat4(m_shader, "uMVP", viewProj);
         
+        // Draw ground plane first
+        if (m_showGround && m_groundMesh) {
+            Mat4 groundWorld = mat4_identity();
+            Mat4 groundMVP = viewProj;  // Ground at origin, identity world transform
+            m_renderer->setUniformMat4(m_shader, "uMVP", groundMVP);
+            m_renderer->setUniformMat4(m_shader, "uWorld", groundWorld);
+            m_renderer->setUniformInt(m_shader, "uUseTexture", 0);
+            
+            // Draw as lines
+            m_renderer->drawMesh(m_groundMesh, 0);
+            
+            // Reset for scene rendering
+            m_renderer->setUniformMat4(m_shader, "uMVP", viewProj);
+        }
+        
         m_scene.render(m_renderer, m_modelMeshHandles, m_modelTextureHandles);
         
         // Track scene stats
@@ -626,6 +646,7 @@ void CubeApp::onKey(int key, int scancode, int action, int mods) {
             LOG_INFO("Scene mode ENABLED - showing 100 airplanes");
             LOG_INFO("TIP: Press 'B' to toggle background (dark/light)");
             LOG_INFO("TIP: Scroll to zoom, drag mouse to rotate view");
+            LOG_WARNING("NOTE: D3D12 scene mode has known issues - use OpenGL or D3D11");
             
             if (m_hasModel) {
                 createExampleScene();
@@ -639,6 +660,12 @@ void CubeApp::onKey(int key, int scancode, int action, int mods) {
     if (key == GLFW_KEY_B && action == GLFW_PRESS) {
         m_useLightBackground = !m_useLightBackground;
         LOG_INFO("Background: %s", m_useLightBackground ? "LIGHT" : "DARK");
+    }
+    
+    // Toggle ground with 'G' key
+    if (key == GLFW_KEY_G && action == GLFW_PRESS) {
+        m_showGround = !m_showGround;
+        LOG_INFO("Ground plane: %s", m_showGround ? "VISIBLE" : "HIDDEN");
     }
 }
 
@@ -721,5 +748,88 @@ void CubeApp::createExampleScene() {
     }
     
     LOG_INFO("Scene created: %zu objects", m_scene.getObjectCount());
+}
+
+// Create ground plane - a grid to show spatial reference
+void CubeApp::createGroundPlane() {
+    LOG_INFO("Creating ground plane...");
+    
+    const float gridSize = 200.0f;    // Total size
+    const int gridDivisions = 20;     // Number of cells
+    const float step = gridSize / gridDivisions;
+    const float halfSize = gridSize * 0.5f;
+    const float groundY = -10.0f;
+    
+    std::vector<Vertex> vertices;
+    std::vector<uint16_t> indices;
+    
+    // Create a flat grid of quads
+    for (int z = 0; z < gridDivisions; z++) {
+        for (int x = 0; x < gridDivisions; x++) {
+            float x0 = -halfSize + x * step;
+            float x1 = x0 + step;
+            float z0 = -halfSize + z * step;
+            float z1 = z0 + step;
+            
+            // Checkerboard pattern - alternating colors
+            bool isLight = ((x + z) % 2) == 0;
+            float brightness = isLight ? 0.25f : 0.15f;
+            
+            // Highlight center lines
+            bool isCenterX = (x == gridDivisions / 2);
+            bool isCenterZ = (z == gridDivisions / 2);
+            
+            float r = brightness, g = brightness, b = brightness;
+            if (isCenterX) r = 0.4f;  // Red X axis
+            if (isCenterZ) b = 0.4f;  // Blue Z axis
+            
+            // Create quad (2 triangles)
+            uint16_t baseIdx = (uint16_t)vertices.size();
+            
+            Vertex v0, v1, v2, v3;
+            v0.px = x0; v0.py = groundY; v0.pz = z0;
+            v0.nx = 0; v0.ny = 1; v0.nz = 0;
+            v0.r = r; v0.g = g; v0.b = b; v0.a = 1.0f;
+            v0.u = 0; v0.v = 0;
+            
+            v1.px = x1; v1.py = groundY; v1.pz = z0;
+            v1.nx = 0; v1.ny = 1; v1.nz = 0;
+            v1.r = r; v1.g = g; v1.b = b; v1.a = 1.0f;
+            v1.u = 0; v1.v = 0;
+            
+            v2.px = x1; v2.py = groundY; v2.pz = z1;
+            v2.nx = 0; v2.ny = 1; v2.nz = 0;
+            v2.r = r; v2.g = g; v2.b = b; v2.a = 1.0f;
+            v2.u = 0; v2.v = 0;
+            
+            v3.px = x0; v3.py = groundY; v3.pz = z1;
+            v3.nx = 0; v3.ny = 1; v3.nz = 0;
+            v3.r = r; v3.g = g; v3.b = b; v3.a = 1.0f;
+            v3.u = 0; v3.v = 0;
+            
+            vertices.push_back(v0);
+            vertices.push_back(v1);
+            vertices.push_back(v2);
+            vertices.push_back(v3);
+            
+            // Triangle 1: v0, v1, v2
+            indices.push_back(baseIdx + 0);
+            indices.push_back(baseIdx + 1);
+            indices.push_back(baseIdx + 2);
+            
+            // Triangle 2: v0, v2, v3
+            indices.push_back(baseIdx + 0);
+            indices.push_back(baseIdx + 2);
+            indices.push_back(baseIdx + 3);
+        }
+    }
+    
+    m_groundMesh = m_renderer->createMesh(
+        vertices.data(), (uint32_t)vertices.size(),
+        indices.data(), (uint32_t)indices.size()
+    );
+    
+    LOG_INFO("Ground plane created: %zu vertices, %zu triangles", 
+             vertices.size(), indices.size() / 3);
 }
 

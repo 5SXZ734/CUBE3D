@@ -115,11 +115,11 @@ struct D3D12Mesh {
 };
 
 // ==================== Constant Buffer ====================
+// lightDir and useTexture moved to root constants
 struct CBData {
-    XMMATRIX world;     // 64 bytes
-    XMFLOAT3 lightDir;  // 12 bytes
-    float    useTexture;// 4 bytes
-    // Total: 80 bytes (padding will align to 256)
+    XMMATRIX world;  // 64 bytes
+    // lightDir moved to root constant b2
+    // useTexture moved to root constant b3
 };
 
 // Helper to convert Mat4 to XMMATRIX
@@ -144,14 +144,24 @@ static const char* g_hlslSrc = R"(
 cbuffer CB : register(b0)
 {
     float4x4 uWorld;
-    float3   uLightDir;
-    float    uUseTexture;
 };
 
 // Root constants for MVP matrix (b1 register)
 cbuffer MVPConstants : register(b1)
 {
     float4x4 uMVP;
+};
+
+// Root constants for lightDir (b2 register)
+cbuffer LightDirConstant : register(b2)
+{
+    float3 uLightDir;
+};
+
+// Root constant for useTexture (b3 register)
+cbuffer UseTextureConstant : register(b3)
+{
+    float uUseTexture;
 };
 
 Texture2D    gTex     : register(t0);
@@ -183,8 +193,19 @@ VSOut VSMain(VSIn v)
 
 float4 PSMain(VSOut i) : SV_Target
 {
-    // DEBUG: Sample texture directly, return it
-    return gTex.Sample(gSampler, i.texCoord);
+    // Calculate lighting
+    float3 L = normalize(-uLightDir);
+    float ndl = max(dot(normalize(i.nrmW), L), 0.0);
+    float ambient = 0.18;
+    float diff = ambient + ndl * 0.82;
+    
+    // Choose base color: texture or vertex color
+    float4 baseColor = i.col;
+    if (uUseTexture > 0.5) {
+        baseColor = gTex.Sample(gSampler, i.texCoord);
+    }
+    
+    return float4(baseColor.rgb * diff, baseColor.a);
 }
 )";
 
@@ -698,10 +719,12 @@ public:
         }
 
         // Root signature: 
-        // [0] = CBV(b0) for world, lightDir, useTexture (96 bytes)
+        // [0] = CBV(b0) for world matrix only (64 bytes)
         // [1] = SRV(t0) for texture
-        // [2] = Root constants for MVP matrix (64 bytes = 16 DWORDs)
-        D3D12_ROOT_PARAMETER rootParams[3] = {};
+        // [2] = Root constants for MVP matrix (16 floats)
+        // [3] = Root constants for lightDir (3 floats)
+        // [4] = Root constant for useTexture (1 float)
+        D3D12_ROOT_PARAMETER rootParams[5] = {};
         
         rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         rootParams[0].Descriptor.ShaderRegister = 0;
@@ -718,12 +741,26 @@ public:
         rootParams[1].DescriptorTable.pDescriptorRanges   = &srvRange;
         rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         
-        // NEW: Root constants for MVP matrix (16 float4s = 64 bytes = 16 DWORDs)
+        // Root constants for MVP matrix (16 floats)
         rootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         rootParams[2].Constants.ShaderRegister = 1;  // b1 register
         rootParams[2].Constants.RegisterSpace = 0;
-        rootParams[2].Constants.Num32BitValues = 16;  // 4x4 matrix = 16 floats
+        rootParams[2].Constants.Num32BitValues = 16;  // 4x4 matrix
         rootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+        
+        // Root constants for lightDir (3 floats)
+        rootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParams[3].Constants.ShaderRegister = 2;  // b2 register
+        rootParams[3].Constants.RegisterSpace = 0;
+        rootParams[3].Constants.Num32BitValues = 3;  // float3
+        rootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        
+        // Root constant for useTexture (1 float)
+        rootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParams[4].Constants.ShaderRegister = 3;  // b3 register
+        rootParams[4].Constants.RegisterSpace = 0;
+        rootParams[4].Constants.Num32BitValues = 1;  // 1 float
+        rootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_STATIC_SAMPLER_DESC sampler = {};
         sampler.Filter         = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -735,7 +772,7 @@ public:
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters     = 3;  // CBV + SRV table + Root constants
+        rsDesc.NumParameters     = 5;  // CBV + SRV table + MVP + lightDir + useTexture
         rsDesc.pParameters       = rootParams;
         rsDesc.NumStaticSamplers = 1;
         rsDesc.pStaticSamplers   = &sampler;
@@ -795,10 +832,11 @@ public:
         }
         
         std::printf("D3D12: Shader created successfully\n");
+        std::printf("D3D12: sizeof(CBData) = %zu bytes\n", sizeof(CBData));
+        std::printf("D3D12: offsetof(CBData, world) = %zu\n", offsetof(CBData, world));
+        std::printf("D3D12: (lightDir and useTexture moved to root constants)\n");
 
-        shader.cbData.world      = XMMatrixIdentity();
-        shader.cbData.lightDir   = XMFLOAT3(0,-1,0);
-        shader.cbData.useTexture = 0.0f;
+        shader.cbData.world = XMMatrixIdentity();
 
         uint32_t h = m_nextShaderHandle++;
         m_shaders[h] = std::move(shader);
@@ -852,18 +890,17 @@ public:
         }
     }
 
+    Vec3 m_lightDir = {0, -1, 0};  // Store for root constant pushing
+    
     void setUniformVec3(uint32_t h, const char* name, const Vec3& v) override {
-        auto it = m_shaders.find(h);
-        if (it == m_shaders.end()) return;
-        if (strcmp(name, "uLightDir") == 0)
-            it->second.cbData.lightDir = XMFLOAT3(v.x, v.y, v.z);
+        if (strcmp(name, "uLightDir") == 0) {
+            m_lightDir = v;  // Store for later use in draw calls
+        }
     }
 
     void setUniformInt(uint32_t h, const char* name, int value) override {
-        auto it = m_shaders.find(h);
-        if (it == m_shaders.end()) return;
-        if (strcmp(name, "uUseTexture") == 0)
-            it->second.cbData.useTexture = (float)value;
+        // useTexture is now a root constant, not in the CB
+        // This function is no longer needed but kept for interface compatibility
     }
 
     // ================================================================
@@ -1013,7 +1050,7 @@ public:
         auto shIt = m_shaders.find(m_currentShader);
         if (shIt != m_shaders.end() && !m_skipCBUpdate) {
             D3D12Shader& sh = shIt->second;
-            sh.cbData.useTexture = (textureHandle > 0) ? 1.0f : 0.0f;
+            // useTexture moved to root constant, no longer in CB
             
             memcpy(m_cbvDataBegin[m_frameIndex], &sh.cbData, sizeof(CBData));
             
@@ -1027,12 +1064,19 @@ public:
         }
         
         // Push MVP matrix as root constants (root parameter 2, b1 register)
-        // This works even with 800 draws because each draw gets its own constants!
         if (m_hasViewProj) {
             XMFLOAT4X4 mvpData;
             XMStoreFloat4x4(&mvpData, m_viewProj);
             m_commandList->SetGraphicsRoot32BitConstants(2, 16, &mvpData, 0);
         }
+        
+        // Push lightDir as root constants (root parameter 3, b2 register)
+        float lightDirData[3] = {m_lightDir.x, m_lightDir.y, m_lightDir.z};
+        m_commandList->SetGraphicsRoot32BitConstants(3, 3, lightDirData, 0);
+        
+        // Push useTexture as root constant (root parameter 4, b3 register)
+        float useTextureValue = (textureHandle > 0) ? 1.0f : 0.0f;
+        m_commandList->SetGraphicsRoot32BitConstants(4, 1, &useTextureValue, 0);
 
         // Bind texture SRV (or dummy at index 1 if no texture)
         D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = m_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
@@ -1082,9 +1126,9 @@ public:
         
         static int debugCount = 0;
         static int totalDraws = 0;
-        if (debugCount < 3) {
-            printf("D3D12 drawMeshInstanced: mesh=%u, tex=%u, count=%u\n", 
-                   meshHandle, textureHandle, instanceCount);
+        if (debugCount < 5) {
+            printf("D3D12 drawMeshInstanced: mesh=%u, tex=%u, count=%u, useTexture will be=%f\n", 
+                   meshHandle, textureHandle, instanceCount, (textureHandle > 0) ? 1.0f : 0.0f);
             printf("  ViewProj stored: %d\n", m_hasViewProj ? 1 : 0);
             debugCount++;
         }
@@ -1126,18 +1170,25 @@ public:
             
             // Update constant buffer with world matrix (b0)
             shIt->second.cbData.world = world;
-            shIt->second.cbData.useTexture = (textureHandle > 0) ? 1.0f : 0.0f;
+            
             memcpy(m_cbvDataBegin[m_frameIndex], &shIt->second.cbData, sizeof(CBData));
             
             // Bind CB (b0)
             m_commandList->SetGraphicsRootConstantBufferView(0,
                 m_constantBuffers[m_frameIndex]->GetGPUVirtualAddress());
             
-            // CRITICAL: Push MVP as root constants (root parameter 2, b1)
-            // Each draw gets its own MVP - THIS is what makes it work!
+            // Push MVP as root constants (root parameter 2, b1)
             XMFLOAT4X4 mvpData;
             XMStoreFloat4x4(&mvpData, mvp);
             m_commandList->SetGraphicsRoot32BitConstants(2, 16, &mvpData, 0);
+            
+            // Push lightDir as root constants (root parameter 3, b2)
+            float lightDirData[3] = {m_lightDir.x, m_lightDir.y, m_lightDir.z};
+            m_commandList->SetGraphicsRoot32BitConstants(3, 3, lightDirData, 0);
+            
+            // Push useTexture as root constant (root parameter 4, b3)
+            float useTextureValue = (textureHandle > 0) ? 1.0f : 0.0f;
+            m_commandList->SetGraphicsRoot32BitConstants(4, 1, &useTextureValue, 0);
             
             // Bind texture
             D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = m_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
@@ -1145,7 +1196,15 @@ public:
                 auto texIt = m_textures.find(textureHandle);
                 if (texIt != m_textures.end()) {
                     srvGpu.ptr += texIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
+                    
+                    static int texDebug = 0;
+                    if (texDebug < 3) {
+                        printf("D3D12 drawMeshInstanced: Binding texture %u at SRV index %u\n",
+                               textureHandle, texIt->second.srvDescriptorIndex);
+                        texDebug++;
+                    }
                 } else {
+                    printf("D3D12 drawMeshInstanced: Texture %u NOT FOUND, using dummy\n", textureHandle);
                     srvGpu.ptr += 1 * m_cbvSrvDescriptorSize;  // Dummy texture
                 }
             } else {

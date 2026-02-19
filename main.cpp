@@ -128,7 +128,7 @@ int main(int argc, char** argv) {
     }
     
     LOG_INFO("Application initialized successfully");
-    LOG_INFO("Press ESC to exit, S to toggle scene mode (100 airplanes), B to toggle background");
+    LOG_INFO("Press ESC to exit, S to toggle scene mode (100 airplanes), B to toggle background, G to toggle ground");
     LOG_INFO("Mouse drag to rotate, scroll to zoom");
     
     app.run();

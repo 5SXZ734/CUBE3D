@@ -44,6 +44,7 @@ private:
     bool createDefaultCube();
     bool loadModel(const char* path);
     void createExampleScene();  // Create 100 airplanes
+    void createGroundPlane();   // Create ground grid
     Mat4 createTransformMatrix(float x, float y, float z, float rotY, float scale);
 
     // Window
@@ -73,6 +74,10 @@ private:
     bool m_useLightBackground;  // Toggle between dark and light background
     std::unordered_map<const Model*, std::vector<uint32_t>> m_modelMeshHandles;
     std::unordered_map<const Model*, std::vector<uint32_t>> m_modelTextureHandles;
+    
+    // Ground plane
+    uint32_t m_groundMesh;
+    bool m_showGround;
 
     // Camera/input state
     bool m_dragging;
