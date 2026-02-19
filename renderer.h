@@ -32,6 +32,8 @@ struct Vertex {
     float nx, ny, nz;    // normal
     float r, g, b, a;    // color
     float u, v;          // texture coordinates
+    float tx, ty, tz;    // tangent (for normal mapping)
+    float bx, by, bz;    // bitangent (for normal mapping)
 };
 
 // ==================== Renderer Interface ====================
@@ -58,7 +60,9 @@ public:
     
     // Texture support
     virtual uint32_t createTexture(const char* filepath) = 0;
+    virtual uint32_t createTextureFromData(const uint8_t* data, int width, int height, int channels) = 0;
     virtual void destroyTexture(uint32_t textureHandle) = 0;
+    virtual void bindTextureToUnit(uint32_t textureHandle, int unit) = 0;  // Bind texture to specific unit
     
     // Shader/material
     virtual uint32_t createShader(const char* vertexSource, const char* fragmentSource) = 0;

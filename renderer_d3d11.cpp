@@ -52,6 +52,8 @@ struct CBData {
     XMMATRIX world;     // transposed  — 64 bytes
     XMFLOAT3 lightDir;                // 12 bytes
     float    useTexture;              //  4 bytes  (1.0 = textured, 0.0 = vertex colour)
+    float    useNormalMap;            //  4 bytes  (1.0 = use normal map, 0.0 = vertex normal)
+    XMFLOAT3 padding;                 // 12 bytes (alignment)
 };
 
 // Helper to convert Mat4 to XMMATRIX
@@ -105,6 +107,9 @@ private:
     XMMATRIX m_viewProj;
     bool m_hasViewProj;
     bool m_inInstancedDraw;
+    
+    // Store normal map binding for texture slot 1
+    uint32_t m_boundNormalMap;
 
     // Helper to get HWND from GLFWwindow
     HWND getHWND(GLFWwindow* window) {
@@ -199,9 +204,12 @@ cbuffer CB : register(b0)
     float4x4 uWorld;
     float3   uLightDir;
     float    uUseTexture;
+    float    uUseNormalMap;  // Flag for normal mapping
+    float3   padding;        // Padding for 16-byte alignment
 };
 
 Texture2D    gTex     : register(t0);
+Texture2D    gNormalMap : register(t1);  // Normal map texture
 SamplerState gSampler : register(s0);
 
 struct VSIn {
@@ -209,6 +217,8 @@ struct VSIn {
     float3 aNrm      : NORMAL;
     float4 aCol      : COLOR;
     float2 aTexCoord : TEXCOORD0;
+    float3 aTangent  : TANGENT;
+    float3 aBitangent: BITANGENT;
 };
 
 struct VSOut {
@@ -216,24 +226,47 @@ struct VSOut {
     float3 nrmW     : TEXCOORD0;
     float4 col      : COLOR;
     float2 texCoord : TEXCOORD1;
+    float3x3 TBN    : TEXCOORD2;  // TBN matrix (uses TEXCOORD2,3,4)
 };
 
 VSOut VSMain(VSIn v)
 {
     VSOut o;
-    o.pos     = mul(float4(v.aPos, 1.0), uMVP);
-    o.nrmW    = normalize(mul(float4(v.aNrm, 0.0), uWorld).xyz);
-    o.col     = v.aCol;
+    o.pos = mul(float4(v.aPos, 1.0), uMVP);
+    
+    // Transform tangent space vectors to world space
+    float3 T = normalize(mul(float4(v.aTangent, 0.0), uWorld).xyz);
+    float3 B = normalize(mul(float4(v.aBitangent, 0.0), uWorld).xyz);
+    float3 N = normalize(mul(float4(v.aNrm, 0.0), uWorld).xyz);
+    
+    // Build TBN matrix
+    o.TBN = float3x3(T, B, N);
+    o.nrmW = N;
+    
+    o.col = v.aCol;
     o.texCoord = v.aTexCoord;
     return o;
 }
 
 float4 PSMain(VSOut i) : SV_Target
 {
-    float3 L   = normalize(-uLightDir);
-    float  ndl = saturate(dot(normalize(i.nrmW), L));
-    float  diff = 0.18 + ndl * 0.82;
+    // Get normal (from normal map or vertex)
+    float3 N = i.nrmW;
+    if (uUseNormalMap > 0.5) {
+        // Sample normal map and convert from [0,1] to [-1,1]
+        float3 normalMapSample = gNormalMap.Sample(gSampler, i.texCoord).rgb;
+        float3 tangentNormal = normalize(normalMapSample * 2.0 - 1.0);
+        
+        // Transform to world space
+        N = normalize(mul(tangentNormal, i.TBN));
+    }
+    
+    // Lighting
+    float3 L = normalize(-uLightDir);
+    float ndl = saturate(dot(N, L));
+    float diff = 0.18 + ndl * 0.82;
 
+    // Base color
     float4 baseColor = (uUseTexture > 0.5)
                        ? gTex.Sample(gSampler, i.texCoord)
                        : i.col;
@@ -254,6 +287,7 @@ public:
         , m_height(720)
         , m_hasViewProj(false)
         , m_inInstancedDraw(false)
+        , m_boundNormalMap(0)
     {
         m_clearColor[0] = 0.0f;
         m_clearColor[1] = 0.0f;
@@ -505,10 +539,12 @@ public:
 
         // Create input layout — must match Vertex struct AND VSIn semantics
         D3D11_INPUT_ELEMENT_DESC layout[] = {
-            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 40, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "POSITION",  0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "NORMAL",    0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "COLOR",     0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD",  0, DXGI_FORMAT_R32G32_FLOAT,       0, 40, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TANGENT",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 48, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "BITANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 60, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         };
 
         hr = m_device->CreateInputLayout(
@@ -676,12 +712,93 @@ public:
     void destroyTexture(uint32_t textureHandle) override {
         m_textures.erase(textureHandle);
     }
+    
+    uint32_t createTextureFromData(const uint8_t* data, int width, int height, int channels) override {
+        if (!data) {
+            std::fprintf(stderr, "D3D11: createTextureFromData - null data\n");
+            return 0;
+        }
+        
+        std::printf("D3D11: Creating texture from data (%dx%d, %d channels)\n", width, height, channels);
+        
+        D3D11Texture texture;
+        texture.width = width;
+        texture.height = height;
+        
+        // Determine format
+        DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        if (channels == 1) format = DXGI_FORMAT_R8_UNORM;
+        else if (channels == 3) format = DXGI_FORMAT_R8G8B8A8_UNORM; // D3D11 doesn't have RGB8, use RGBA8
+        else if (channels == 4) format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        
+        // If 3 channels, need to convert to 4 channels
+        std::vector<uint8_t> rgba_data;
+        const uint8_t* upload_data = data;
+        if (channels == 3) {
+            rgba_data.resize(width * height * 4);
+            for (int i = 0; i < width * height; i++) {
+                rgba_data[i * 4 + 0] = data[i * 3 + 0];
+                rgba_data[i * 4 + 1] = data[i * 3 + 1];
+                rgba_data[i * 4 + 2] = data[i * 3 + 2];
+                rgba_data[i * 4 + 3] = 255;
+            }
+            upload_data = rgba_data.data();
+        }
+        
+        // Create texture
+        D3D11_TEXTURE2D_DESC texDesc = {};
+        texDesc.Width = width;
+        texDesc.Height = height;
+        texDesc.MipLevels = 1;
+        texDesc.ArraySize = 1;
+        texDesc.Format = format;
+        texDesc.SampleDesc.Count = 1;
+        texDesc.Usage = D3D11_USAGE_IMMUTABLE;
+        texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        
+        D3D11_SUBRESOURCE_DATA initData = {};
+        initData.pSysMem = upload_data;
+        initData.SysMemPitch = width * (channels == 3 ? 4 : channels);
+        
+        HRESULT hr = m_device->CreateTexture2D(&texDesc, &initData, texture.texture.GetAddressOf());
+        if (FAILED(hr)) {
+            std::fprintf(stderr, "D3D11: Failed to create texture from data\n");
+            return 0;
+        }
+        
+        // Create SRV
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = format;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MipLevels = 1;
+        
+        hr = m_device->CreateShaderResourceView(texture.texture.Get(), &srvDesc, texture.srv.GetAddressOf());
+        if (FAILED(hr)) {
+            std::fprintf(stderr, "D3D11: Failed to create SRV for texture\n");
+            return 0;
+        }
+        
+        uint32_t handle = m_nextTextureHandle++;
+        m_textures[handle] = texture;
+        std::printf("D3D11: Texture created successfully, handle=%u\n", handle);
+        return handle;
+    }
+    
+    void bindTextureToUnit(uint32_t textureHandle, int unit) override {
+        // D3D11: Store for binding in draw calls
+        if (unit == 1) {
+            m_boundNormalMap = textureHandle;
+        }
+        // Diffuse texture (unit 0) is bound per-draw-call in drawMesh
+    }
 
     void setUniformInt(uint32_t shaderHandle, const char* name, int value) override {
         auto it = m_shaders.find(shaderHandle);
         if (it == m_shaders.end()) return;
         if (strcmp(name, "uUseTexture") == 0)
             it->second.cbData.useTexture = (float)value;
+        else if (strcmp(name, "uUseNormalMap") == 0)
+            it->second.cbData.useNormalMap = (float)value;
     }
 
     void drawMesh(uint32_t meshHandle, uint32_t textureHandle = 0) override {
@@ -709,7 +826,7 @@ public:
             m_context->PSSetConstantBuffers(0, 1, shader.constantBuffer.GetAddressOf());
         }
 
-        // Bind or unbind texture
+        // Bind or unbind diffuse texture (slot 0)
         if (textureHandle > 0) {
             auto texIt = m_textures.find(textureHandle);
             if (texIt != m_textures.end()) {
@@ -719,6 +836,18 @@ public:
         } else {
             ID3D11ShaderResourceView* nullSRV = nullptr;
             m_context->PSSetShaderResources(0, 1, &nullSRV);
+        }
+        
+        // Bind normal map to slot 1
+        if (m_boundNormalMap > 0) {
+            auto normalTexIt = m_textures.find(m_boundNormalMap);
+            if (normalTexIt != m_textures.end()) {
+                ID3D11ShaderResourceView* normalSrv = normalTexIt->second.srv.Get();
+                m_context->PSSetShaderResources(1, 1, &normalSrv);
+            }
+        } else {
+            ID3D11ShaderResourceView* nullSRV = nullptr;
+            m_context->PSSetShaderResources(1, 1, &nullSRV);
         }
 
         D3D11Mesh& mesh = meshIt->second;

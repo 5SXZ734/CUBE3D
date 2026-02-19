@@ -12,14 +12,18 @@ struct ModelVertex {
     float px, py, pz;    // position
     float nx, ny, nz;    // normal
     float u, v;          // texture coordinates
+    float tx, ty, tz;    // tangent (for normal mapping)
+    float bx, by, bz;    // bitangent (for normal mapping)
 };
 
 struct ModelMesh {
     std::vector<ModelVertex> vertices;
     std::vector<uint32_t> indices;
-    std::string texturePath;
+    std::string texturePath;         // Diffuse/color texture
+    std::string normalMapPath;       // Normal map texture (optional)
     uint32_t rendererMeshHandle;
     uint32_t rendererTextureHandle;
+    uint32_t rendererNormalMapHandle;  // Handle to normal map texture
 };
 
 struct Model {

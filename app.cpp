@@ -1,6 +1,7 @@
 // app.cpp - Application logic implementation
 #include "app.h"
 #include "debug.h"
+#include "normal_map_gen.h"  // Procedural normal map generation
 #include <GLFW/glfw3.h>
 #include <cstdio>
 #include <cmath>
@@ -154,6 +155,8 @@ CubeApp::CubeApp()
     , m_showStats(false)
     , m_groundMesh(0)
     , m_showGround(true)
+    , m_proceduralNormalMap(0)
+    , m_useNormalMapping(false)
 {}
 
 CubeApp::~CubeApp() {
@@ -247,13 +250,15 @@ bool CubeApp::initialize(RendererAPI api, const char* modelPath) {
         }
     }
 
-    // Create shader with texture support
+    // Create shader with texture and normal mapping support
     const char* vsSrc = R"(
 #version 330 core
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNrm;
 layout(location=2) in vec4 aCol;
 layout(location=3) in vec2 aTexCoord;
+layout(location=4) in vec3 aTangent;
+layout(location=5) in vec3 aBitangent;
 
 uniform mat4 uMVP;
 uniform mat4 uWorld;
@@ -261,11 +266,21 @@ uniform mat4 uWorld;
 out vec3 vNrmW;
 out vec4 vCol;
 out vec2 vTexCoord;
+out mat3 vTBN;  // Tangent-Bitangent-Normal matrix for normal mapping
 
 void main()
 {
     gl_Position = uMVP * vec4(aPos, 1.0);
-    vNrmW = normalize((uWorld * vec4(aNrm, 0.0)).xyz);
+    
+    // Transform normal, tangent, bitangent to world space
+    vec3 T = normalize(vec3(uWorld * vec4(aTangent, 0.0)));
+    vec3 B = normalize(vec3(uWorld * vec4(aBitangent, 0.0)));
+    vec3 N = normalize(vec3(uWorld * vec4(aNrm, 0.0)));
+    
+    // Construct TBN matrix (transforms from tangent space to world space)
+    vTBN = mat3(T, B, N);
+    
+    vNrmW = N;  // Keep original normal for non-normal-mapped surfaces
     vCol = aCol;
     vTexCoord = aTexCoord;
 }
@@ -276,20 +291,36 @@ void main()
 in vec3 vNrmW;
 in vec4 vCol;
 in vec2 vTexCoord;
+in mat3 vTBN;
 
 uniform vec3 uLightDir;
 uniform int uUseTexture;
+uniform int uUseNormalMap;  // New: flag for normal mapping
 uniform sampler2D uTexture;
+uniform sampler2D uNormalMap;  // New: normal map texture
 
 out vec4 FragColor;
 
 void main()
 {
+    // Get normal (either from normal map or vertex normal)
+    vec3 N = vNrmW;
+    if (uUseNormalMap > 0) {
+        // Sample normal map and convert from [0,1] to [-1,1]
+        vec3 normalMapSample = texture(uNormalMap, vTexCoord).rgb;
+        vec3 tangentNormal = normalize(normalMapSample * 2.0 - 1.0);
+        
+        // Transform from tangent space to world space using TBN
+        N = normalize(vTBN * tangentNormal);
+    }
+    
+    // Lighting calculation
     vec3 L = normalize(-uLightDir);
-    float ndl = max(dot(normalize(vNrmW), L), 0.0);
+    float ndl = max(dot(N, L), 0.0);
     float ambient = 0.18;
     float diff = ambient + ndl * 0.82;
     
+    // Base color (texture or vertex color)
     vec4 baseColor = vCol;
     if (uUseTexture > 0) {
         baseColor = texture(uTexture, vTexCoord);
@@ -305,6 +336,11 @@ void main()
         LOG_ERROR("Failed to create shader");
         return false;
     }
+    
+    // Set texture unit bindings for samplers (OpenGL)
+    m_renderer->useShader(m_shader);
+    m_renderer->setUniformInt(m_shader, "uTexture", 0);    // Texture unit 0
+    m_renderer->setUniformInt(m_shader, "uNormalMap", 1);  // Texture unit 1
 
     // Set render state
     m_renderer->setDepthTest(true);
@@ -315,6 +351,17 @@ void main()
     
     // Create ground plane for scene mode
     createGroundPlane();
+    
+    // Create procedural normal map for testing
+    LOG_INFO("Creating procedural normal map...");
+    std::vector<uint8_t> normalMapData = generateProceduralNormalMap(256, 256, 0.5f);
+    m_proceduralNormalMap = m_renderer->createTextureFromData(
+        normalMapData.data(), 256, 256, 4);
+    
+    if (m_proceduralNormalMap) {
+        LOG_INFO("Procedural normal map created successfully");
+        LOG_INFO("Press 'N' to toggle normal mapping on/off");
+    }
 
     LOG_DEBUG("Application initialization complete");
     if (m_hasModel) {
@@ -529,6 +576,15 @@ void CubeApp::render() {
     // Set uniforms once
     m_renderer->useShader(m_shader);
     m_renderer->setUniformVec3(m_shader, "uLightDir", {-0.6f, -1.0f, -0.4f});
+    
+    // Set normal mapping state for the entire frame
+    int useNormalMap = (m_useNormalMapping && m_proceduralNormalMap) ? 1 : 0;
+    m_renderer->setUniformInt(m_shader, "uUseNormalMap", useNormalMap);
+    
+    // Bind normal map to texture unit 1 (stays bound for the frame)
+    if (m_proceduralNormalMap && m_useNormalMapping) {
+        m_renderer->bindTextureToUnit(m_proceduralNormalMap, 1);
+    }
 
     // Render in scene mode or single object mode
     if (m_useSceneMode && m_hasModel) {
@@ -592,6 +648,7 @@ void CubeApp::render() {
         // Draw all meshes
         for (const auto& mesh : m_meshes) {
             m_renderer->setUniformInt(m_shader, "uUseTexture", mesh.textureHandle ? 1 : 0);
+            
             m_renderer->drawMesh(mesh.meshHandle, mesh.textureHandle);
             
             if (m_showStats || m_debugMode) {
@@ -734,6 +791,12 @@ void CubeApp::onKey(int key, int scancode, int action, int mods) {
     if (key == GLFW_KEY_G && action == GLFW_PRESS) {
         m_showGround = !m_showGround;
         LOG_INFO("Ground plane: %s", m_showGround ? "VISIBLE" : "HIDDEN");
+    }
+    
+    // Toggle normal mapping with 'N' key
+    if (key == GLFW_KEY_N && action == GLFW_PRESS) {
+        m_useNormalMapping = !m_useNormalMapping;
+        LOG_INFO("Normal mapping: %s", m_useNormalMapping ? "ENABLED" : "DISABLED");
     }
 }
 

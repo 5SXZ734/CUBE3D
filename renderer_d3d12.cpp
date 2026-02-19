@@ -164,14 +164,23 @@ cbuffer UseTextureConstant : register(b3)
     float uUseTexture;
 };
 
-Texture2D    gTex     : register(t0);
-SamplerState gSampler : register(s0);
+// Root constant for useNormalMap (b4 register)
+cbuffer UseNormalMapConstant : register(b4)
+{
+    float uUseNormalMap;
+};
+
+Texture2D    gTex        : register(t0);
+Texture2D    gNormalMap  : register(t1);  // Normal map
+SamplerState gSampler    : register(s0);
 
 struct VSIn {
-    float3 aPos      : POSITION;
-    float3 aNrm      : NORMAL;
-    float4 aCol      : COLOR;
-    float2 aTexCoord : TEXCOORD0;
+    float3 aPos       : POSITION;
+    float3 aNrm       : NORMAL;
+    float4 aCol       : COLOR;
+    float2 aTexCoord  : TEXCOORD0;
+    float3 aTangent   : TANGENT;
+    float3 aBitangent : BITANGENT;
 };
 
 struct VSOut {
@@ -179,23 +188,47 @@ struct VSOut {
     float3 nrmW     : TEXCOORD0;
     float4 col      : COLOR;
     float2 texCoord : TEXCOORD1;
+    float3x3 TBN    : TEXCOORD2;  // TBN matrix (uses TEXCOORD2,3,4)
 };
 
 VSOut VSMain(VSIn v)
 {
     VSOut o;
-    o.pos      = mul(float4(v.aPos, 1.0), uMVP);
-    o.nrmW     = normalize(mul(float4(v.aNrm, 0.0), uWorld).xyz);
-    o.col      = v.aCol;
+    o.pos = mul(float4(v.aPos, 1.0), uMVP);
+    
+    // Transform tangent space to world space
+    float3 T = normalize(mul(float4(v.aTangent, 0.0), uWorld).xyz);
+    float3 B = normalize(mul(float4(v.aBitangent, 0.0), uWorld).xyz);
+    float3 N = normalize(mul(float4(v.aNrm, 0.0), uWorld).xyz);
+    
+    // Build TBN matrix
+    o.TBN = float3x3(T, B, N);
+    o.nrmW = N;
+    
+    o.col = v.aCol;
     o.texCoord = v.aTexCoord;
     return o;
 }
 
 float4 PSMain(VSOut i) : SV_Target
 {
+    // Get normal (from normal map or vertex)
+    float3 N = i.nrmW;
+    if (uUseNormalMap > 0.5) {
+        // Sample normal map and convert from [0,1] to [-1,1]
+        float3 normalMapSample = gNormalMap.Sample(gSampler, i.texCoord).rgb;
+        float3 tangentNormal = normalize(normalMapSample * 2.0 - 1.0);
+        
+        // Transform to world space
+        N = normalize(mul(tangentNormal, i.TBN));
+    }
+    
+    // DEBUG: Visualize normal as color (remove after testing)
+    // return float4(N * 0.5 + 0.5, 1.0);
+    
     // Calculate lighting
     float3 L = normalize(-uLightDir);
-    float ndl = max(dot(normalize(i.nrmW), L), 0.0);
+    float ndl = max(dot(N, L), 0.0);
     float ambient = 0.18;
     float diff = ambient + ndl * 0.82;
     
@@ -262,6 +295,9 @@ private:
     bool m_skipCBUpdate = false;  // Skip CB update in drawMesh when we've already done it
     bool m_depthTestEnabled  = true;
     bool m_cullingEnabled    = false;
+    
+    // Store normal map binding
+    uint32_t m_boundNormalMap = 0;
 
     // ==== Helpers ====
     HWND getHWND(GLFWwindow* w) { return glfwGetWin32Window(w); }
@@ -547,7 +583,22 @@ public:
             srvHandle.ptr += 1 * m_cbvSrvDescriptorSize;  // Index 1
             m_device->CreateShaderResourceView(dummyTexture.Get(), &srvDesc, srvHandle);
             
-            std::printf("Created dummy texture at SRV index 1\n");
+            // Also create dummy at index 2 for normal map slot
+            // Normal maps should have RGB(128,128,255) which is (0,0,1) in tangent space
+            D3D12_CPU_DESCRIPTOR_HANDLE srvHandle2 = m_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart();
+            srvHandle2.ptr += 2 * m_cbvSrvDescriptorSize;  // Index 2
+            m_device->CreateShaderResourceView(dummyTexture.Get(), &srvDesc, srvHandle2);
+            
+            // Initialize staging slots (63, 64) with dummy descriptors
+            D3D12_CPU_DESCRIPTOR_HANDLE stagingDiffuse = m_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart();
+            stagingDiffuse.ptr += (MAX_TEXTURES - 1) * m_cbvSrvDescriptorSize;  // Slot 63
+            m_device->CreateShaderResourceView(dummyTexture.Get(), &srvDesc, stagingDiffuse);
+            
+            D3D12_CPU_DESCRIPTOR_HANDLE stagingNormal = m_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart();
+            stagingNormal.ptr += MAX_TEXTURES * m_cbvSrvDescriptorSize;  // Slot 64
+            m_device->CreateShaderResourceView(dummyTexture.Get(), &srvDesc, stagingNormal);
+            
+            std::printf("Created dummy textures at SRV indices 1, 2, 63 (staging diffuse), 64 (staging normal)\n");
         }
         
         return true;
@@ -720,11 +771,12 @@ public:
 
         // Root signature: 
         // [0] = CBV(b0) for world matrix only (64 bytes)
-        // [1] = SRV(t0) for texture
+        // [1] = SRV descriptor table (t0=diffuse, t1=normal map)
         // [2] = Root constants for MVP matrix (16 floats)
         // [3] = Root constants for lightDir (3 floats)
         // [4] = Root constant for useTexture (1 float)
-        D3D12_ROOT_PARAMETER rootParams[5] = {};
+        // [5] = Root constant for useNormalMap (1 float)
+        D3D12_ROOT_PARAMETER rootParams[6] = {};
         
         rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         rootParams[0].Descriptor.ShaderRegister = 0;
@@ -732,8 +784,8 @@ public:
 
         D3D12_DESCRIPTOR_RANGE srvRange = {};
         srvRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        srvRange.NumDescriptors     = 1;
-        srvRange.BaseShaderRegister = 0;
+        srvRange.NumDescriptors     = 2;  // Changed to 2 for diffuse + normal map
+        srvRange.BaseShaderRegister = 0;  // Starts at t0
         srvRange.OffsetInDescriptorsFromTableStart = 0;
 
         rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -761,6 +813,13 @@ public:
         rootParams[4].Constants.RegisterSpace = 0;
         rootParams[4].Constants.Num32BitValues = 1;  // 1 float
         rootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        
+        // Root constant for useNormalMap (1 float)
+        rootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParams[5].Constants.ShaderRegister = 4;  // b4 register
+        rootParams[5].Constants.RegisterSpace = 0;
+        rootParams[5].Constants.Num32BitValues = 1;  // 1 float
+        rootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_STATIC_SAMPLER_DESC sampler = {};
         sampler.Filter         = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -772,7 +831,7 @@ public:
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters     = 5;  // CBV + SRV table + MVP + lightDir + useTexture
+        rsDesc.NumParameters     = 6;  // CBV + SRV table + MVP + lightDir + useTexture + useNormalMap
         rsDesc.pParameters       = rootParams;
         rsDesc.NumStaticSamplers = 1;
         rsDesc.pStaticSamplers   = &sampler;
@@ -798,10 +857,12 @@ public:
 
         // Input layout
         D3D12_INPUT_ELEMENT_DESC layout[] = {
-            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "POSITION",  0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "NORMAL",    0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "COLOR",     0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD",  0, DXGI_FORMAT_R32G32_FLOAT,       0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TANGENT",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "BITANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 60, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         };
 
         // PSO
@@ -891,6 +952,7 @@ public:
     }
 
     Vec3 m_lightDir = {0, -1, 0};  // Store for root constant pushing
+    float m_useNormalMap = 0.0f;    // Store for root constant pushing
     
     void setUniformVec3(uint32_t h, const char* name, const Vec3& v) override {
         if (strcmp(name, "uLightDir") == 0) {
@@ -899,8 +961,11 @@ public:
     }
 
     void setUniformInt(uint32_t h, const char* name, int value) override {
-        // useTexture is now a root constant, not in the CB
-        // This function is no longer needed but kept for interface compatibility
+        // Root constants - store for use in draw calls
+        if (strcmp(name, "uUseNormalMap") == 0) {
+            m_useNormalMap = (float)value;
+        }
+        // useTexture is set per-draw-call, not stored globally
     }
 
     // ================================================================
@@ -1040,6 +1105,133 @@ public:
             m_textures.erase(it);
         }
     }
+    
+    uint32_t createTextureFromData(const uint8_t* data, int width, int height, int channels) override {
+        if (!data) {
+            std::fprintf(stderr, "D3D12: createTextureFromData - null data\n");
+            return 0;
+        }
+        
+        if (m_nextSrvIndex >= (1 + MAX_TEXTURES)) {
+            std::fprintf(stderr, "D3D12: Texture limit reached\n");
+            return 0;
+        }
+        
+        std::printf("D3D12: Creating texture from data (%dx%d, %d channels)\n", width, height, channels);
+        
+        // Convert to RGBA if needed
+        std::vector<uint8_t> rgba_data;
+        const uint8_t* upload_data = data;
+        int upload_channels = channels;
+        
+        if (channels == 3) {
+            rgba_data.resize(width * height * 4);
+            for (int i = 0; i < width * height; i++) {
+                rgba_data[i * 4 + 0] = data[i * 3 + 0];
+                rgba_data[i * 4 + 1] = data[i * 3 + 1];
+                rgba_data[i * 4 + 2] = data[i * 3 + 2];
+                rgba_data[i * 4 + 3] = 255;
+            }
+            upload_data = rgba_data.data();
+            upload_channels = 4;
+        }
+        
+        D3D12Texture tex;
+        tex.width = width;
+        tex.height = height;
+        tex.srvDescriptorIndex = m_nextSrvIndex++;
+        
+        // Create GPU resource
+        D3D12_RESOURCE_DESC texDesc = Tex2DDesc(width, height, DXGI_FORMAT_R8G8B8A8_UNORM);
+        D3D12_HEAP_PROPERTIES defaultProps = DefaultHeapProps();
+        m_device->CreateCommittedResource(&defaultProps, D3D12_HEAP_FLAG_NONE,
+            &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+            IID_PPV_ARGS(&tex.resource));
+        
+        // D3D12 requires 256-byte aligned row pitch
+        UINT rowPitch = (width * 4 + 255) & ~255;
+        UINT64 uploadSize = rowPitch * height;
+        
+        // Upload buffer
+        D3D12_RESOURCE_DESC uploadDesc = BufferDesc(uploadSize);
+        D3D12_HEAP_PROPERTIES uploadProps = UploadHeapProps();
+        ComPtr<ID3D12Resource> uploadBuffer;
+        m_device->CreateCommittedResource(&uploadProps, D3D12_HEAP_FLAG_NONE,
+            &uploadDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            IID_PPV_ARGS(&uploadBuffer));
+        
+        // Copy data with row padding
+        void* mapped;
+        uploadBuffer->Map(0, nullptr, &mapped);
+        unsigned char* dst = (unsigned char*)mapped;
+        for (int y = 0; y < height; y++) {
+            memcpy(dst + y * rowPitch, upload_data + y * width * upload_channels, width * upload_channels);
+        }
+        uploadBuffer->Unmap(0, nullptr);
+        
+        // Upload via command list
+        if (m_currentFenceValue > 0) {
+            if (m_fence->GetCompletedValue() < m_currentFenceValue) {
+                m_fence->SetEventOnCompletion(m_currentFenceValue, m_fenceEvent);
+                WaitForSingleObject(m_fenceEvent, INFINITE);
+            }
+        }
+        m_uploadAllocator->Reset();
+        m_uploadCommandList->Reset(m_uploadAllocator.Get(), nullptr);
+        
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+        footprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        footprint.Footprint.Width = width;
+        footprint.Footprint.Height = height;
+        footprint.Footprint.Depth = 1;
+        footprint.Footprint.RowPitch = rowPitch;
+        
+        D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+        srcLoc.pResource = uploadBuffer.Get();
+        srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        srcLoc.PlacedFootprint = footprint;
+        
+        D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+        dstLoc.pResource = tex.resource.Get();
+        dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dstLoc.SubresourceIndex = 0;
+        
+        m_uploadCommandList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+        
+        D3D12_RESOURCE_BARRIER barrier = TransitionBarrier(tex.resource.Get(),
+            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        m_uploadCommandList->ResourceBarrier(1, &barrier);
+        
+        m_uploadCommandList->Close();
+        ID3D12CommandList* lists[] = { m_uploadCommandList.Get() };
+        m_commandQueue->ExecuteCommandLists(1, lists);
+        waitForGpu();
+        
+        // Create SRV
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MipLevels = 1;
+        
+        D3D12_CPU_DESCRIPTOR_HANDLE srvHandle = m_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart();
+        srvHandle.ptr += tex.srvDescriptorIndex * m_cbvSrvDescriptorSize;
+        m_device->CreateShaderResourceView(tex.resource.Get(), &srvDesc, srvHandle);
+        
+        uint32_t handle = m_nextTextureHandle++;
+        m_textures[handle] = std::move(tex);
+        std::printf("D3D12: Texture created successfully, handle=%u, SRV index=%d\n", 
+                   handle, tex.srvDescriptorIndex);
+        return handle;
+    }
+    
+    void bindTextureToUnit(uint32_t textureHandle, int unit) override {
+        // D3D12: Store normal map handle for binding in descriptor table
+        if (unit == 1) {
+            m_boundNormalMap = textureHandle;
+            std::printf("D3D12: Normal map bound, handle=%u\n", textureHandle);
+        }
+    }
 
     // ================================================================
     void drawMesh(uint32_t meshHandle, uint32_t textureHandle = 0) override {
@@ -1074,35 +1266,55 @@ public:
         float lightDirData[3] = {m_lightDir.x, m_lightDir.y, m_lightDir.z};
         m_commandList->SetGraphicsRoot32BitConstants(3, 3, lightDirData, 0);
         
+        static int lightDebug = 0;
+        if (lightDebug < 3) {
+            std::printf("D3D12: Pushing lightDir=(%f, %f, %f)\n", 
+                       m_lightDir.x, m_lightDir.y, m_lightDir.z);
+            lightDebug++;
+        }
+        
         // Push useTexture as root constant (root parameter 4, b3 register)
         float useTextureValue = (textureHandle > 0) ? 1.0f : 0.0f;
         m_commandList->SetGraphicsRoot32BitConstants(4, 1, &useTextureValue, 0);
+        
+        // Push useNormalMap as root constant (root parameter 5, b4 register)
+        m_commandList->SetGraphicsRoot32BitConstants(5, 1, &m_useNormalMap, 0);
 
-        // Bind texture SRV (or dummy at index 1 if no texture)
-        D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = m_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
+        // Simple approach: Always bind starting at slot 1 (dummy/diffuse) and slot 2 (normal)
+        // Slot 1 was initialized with dummy, we'll overwrite it each frame if needed
+        // Slot 2 was also initialized with dummy
+        
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuBase = m_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart();
+        
+        // Update slot 1 with diffuse texture (or leave dummy)
+        D3D12_CPU_DESCRIPTOR_HANDLE slot1 = cpuBase;
+        slot1.ptr += 1 * m_cbvSrvDescriptorSize;
         
         if (textureHandle > 0) {
             auto texIt = m_textures.find(textureHandle);
             if (texIt != m_textures.end()) {
-                srvGpu.ptr += texIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
-                
-                static bool once = false;
-                if (!once) {
-                    std::printf("D3D12 drawMesh: Binding texture handle %d, SRV index %d\n",
-                               textureHandle, texIt->second.srvDescriptorIndex);
-                    once = true;
-                }
-            } else {
-                std::fprintf(stderr, "D3D12 drawMesh: Texture handle %d not found!\n", textureHandle);
-                // Fall back to dummy texture at index 1
-                srvGpu.ptr += 1 * m_cbvSrvDescriptorSize;
+                D3D12_CPU_DESCRIPTOR_HANDLE diffuseSrc = cpuBase;
+                diffuseSrc.ptr += texIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
+                m_device->CopyDescriptorsSimple(1, slot1, diffuseSrc, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
             }
-        } else {
-            // No texture - use dummy black texture at index 1
-            srvGpu.ptr += 1 * m_cbvSrvDescriptorSize;
         }
         
-        // Always set descriptor table - D3D12 requires it
+        // Update slot 2 with normal map (or leave dummy)  
+        D3D12_CPU_DESCRIPTOR_HANDLE slot2 = cpuBase;
+        slot2.ptr += 2 * m_cbvSrvDescriptorSize;
+        
+        if (m_boundNormalMap > 0) {
+            auto normalTexIt = m_textures.find(m_boundNormalMap);
+            if (normalTexIt != m_textures.end()) {
+                D3D12_CPU_DESCRIPTOR_HANDLE normalSrc = cpuBase;
+                normalSrc.ptr += normalTexIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
+                m_device->CopyDescriptorsSimple(1, slot2, normalSrc, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            }
+        }
+        
+        // Bind descriptor table starting at slot 1 (reads slots 1 and 2)
+        D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = m_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
+        srvGpu.ptr += 1 * m_cbvSrvDescriptorSize;
         m_commandList->SetGraphicsRootDescriptorTable(1, srvGpu);
 
         D3D12Mesh& mesh = meshIt->second;
@@ -1190,26 +1402,41 @@ public:
             float useTextureValue = (textureHandle > 0) ? 1.0f : 0.0f;
             m_commandList->SetGraphicsRoot32BitConstants(4, 1, &useTextureValue, 0);
             
-            // Bind texture
-            D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = m_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
+            // Push useNormalMap as root constant (root parameter 5, b4)
+            m_commandList->SetGraphicsRoot32BitConstants(5, 1, &m_useNormalMap, 0);
+            
+            // Use slots 1-2 approach (same as drawMesh)
+            D3D12_CPU_DESCRIPTOR_HANDLE cpuBase = m_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart();
+            
+            // Update slot 1 with diffuse
+            D3D12_CPU_DESCRIPTOR_HANDLE slot1 = cpuBase;
+            slot1.ptr += 1 * m_cbvSrvDescriptorSize;
+            
             if (textureHandle > 0) {
                 auto texIt = m_textures.find(textureHandle);
                 if (texIt != m_textures.end()) {
-                    srvGpu.ptr += texIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
-                    
-                    static int texDebug = 0;
-                    if (texDebug < 3) {
-                        printf("D3D12 drawMeshInstanced: Binding texture %u at SRV index %u\n",
-                               textureHandle, texIt->second.srvDescriptorIndex);
-                        texDebug++;
-                    }
-                } else {
-                    printf("D3D12 drawMeshInstanced: Texture %u NOT FOUND, using dummy\n", textureHandle);
-                    srvGpu.ptr += 1 * m_cbvSrvDescriptorSize;  // Dummy texture
+                    D3D12_CPU_DESCRIPTOR_HANDLE diffuseSrc = cpuBase;
+                    diffuseSrc.ptr += texIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
+                    m_device->CopyDescriptorsSimple(1, slot1, diffuseSrc, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
                 }
-            } else {
-                srvGpu.ptr += 1 * m_cbvSrvDescriptorSize;  // Dummy texture
             }
+            
+            // Update slot 2 with normal map
+            D3D12_CPU_DESCRIPTOR_HANDLE slot2 = cpuBase;
+            slot2.ptr += 2 * m_cbvSrvDescriptorSize;
+            
+            if (m_boundNormalMap > 0) {
+                auto normalTexIt = m_textures.find(m_boundNormalMap);
+                if (normalTexIt != m_textures.end()) {
+                    D3D12_CPU_DESCRIPTOR_HANDLE normalSrc = cpuBase;
+                    normalSrc.ptr += normalTexIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
+                    m_device->CopyDescriptorsSimple(1, slot2, normalSrc, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                }
+            }
+            
+            // Bind starting at slot 1
+            D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = m_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
+            srvGpu.ptr += 1 * m_cbvSrvDescriptorSize;
             m_commandList->SetGraphicsRootDescriptorTable(1, srvGpu);
             
             // Draw this instance

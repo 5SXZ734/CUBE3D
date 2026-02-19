@@ -170,21 +170,29 @@ public:
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ebo);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indexCount * sizeof(uint16_t), indices, GL_STATIC_DRAW);
 
-        // Position
+        // Position (attribute 0)
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
 
-        // Normal
+        // Normal (attribute 1)
         glEnableVertexAttribArray(1);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(3 * sizeof(float)));
 
-        // Color
+        // Color (attribute 2)
         glEnableVertexAttribArray(2);
         glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(6 * sizeof(float)));
 
-        // TexCoord
+        // TexCoord (attribute 3)
         glEnableVertexAttribArray(3);
         glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(10 * sizeof(float)));
+
+        // Tangent (attribute 4) - for normal mapping
+        glEnableVertexAttribArray(4);
+        glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(12 * sizeof(float)));
+
+        // Bitangent (attribute 5) - for normal mapping
+        glEnableVertexAttribArray(5);
+        glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(15 * sizeof(float)));
 
         glBindVertexArray(0);
 
@@ -336,6 +344,47 @@ public:
         // Free image data
         stbi_image_free(data);
         
+        uint32_t handle = m_nextTextureHandle++;
+        m_textures[handle] = texture;
+        return handle;
+    }
+    
+    uint32_t createTextureFromData(const uint8_t* data, int width, int height, int channels) override {
+        if (!data) {
+            std::fprintf(stderr, "createTextureFromData: null data pointer\n");
+            return 0;
+        }
+        
+        std::printf("Creating texture from data (%dx%d, %d channels)\n", width, height, channels);
+        
+        // Create OpenGL texture
+        GLTexture texture;
+        texture.width = width;
+        texture.height = height;
+
+        glGenTextures(1, &texture.id);
+        glBindTexture(GL_TEXTURE_2D, texture.id);
+        
+        // Determine format
+        GLenum format = GL_RGB;
+        if (channels == 1) format = GL_RED;
+        else if (channels == 3) format = GL_RGB;
+        else if (channels == 4) format = GL_RGBA;
+        
+        // Upload texture data (no flip needed for procedural data)
+        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+        
+        // Set texture parameters
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        
+        // Generate mipmaps
+        glGenerateMipmap(GL_TEXTURE_2D);
+        
+        glBindTexture(GL_TEXTURE_2D, 0);
+        
         // Store and return handle
         uint32_t handle = m_nextTextureHandle++;
         m_textures[handle] = texture;
@@ -348,6 +397,17 @@ public:
             glDeleteTextures(1, &it->second.id);
             m_textures.erase(it);
         }
+    }
+    
+    void bindTextureToUnit(uint32_t textureHandle, int unit) override {
+        auto it = m_textures.find(textureHandle);
+        if (it == m_textures.end()) {
+            std::fprintf(stderr, "bindTextureToUnit: Invalid texture handle %u\n", textureHandle);
+            return;
+        }
+        
+        glActiveTexture(GL_TEXTURE0 + unit);
+        glBindTexture(GL_TEXTURE_2D, it->second.id);
     }
 
     void setUniformInt(uint32_t shaderHandle, const char* name, int value) override {

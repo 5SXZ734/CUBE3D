@@ -24,6 +24,7 @@ bool ModelLoader::LoadXFile(const char* filepath, Model& outModel) {
     const aiScene* scene = importer.ReadFile(filepath,
         aiProcess_Triangulate |           // Convert polygons to triangles
         aiProcess_GenNormals |            // Generate normals if missing
+        aiProcess_CalcTangentSpace |      // Calculate tangent and bitangent vectors
         aiProcess_FlipUVs |               // Flip V coordinate (OpenGL convention)
         aiProcess_JoinIdenticalVertices | // Optimize vertex data
         aiProcess_SortByPType);           // Sort by primitive type
@@ -44,6 +45,7 @@ bool ModelLoader::LoadXFile(const char* filepath, Model& outModel) {
         ModelMesh modelMesh;
         modelMesh.rendererMeshHandle = 0;
         modelMesh.rendererTextureHandle = 0;
+        modelMesh.rendererNormalMapHandle = 0;
 
         // Extract vertices
         for (unsigned int v = 0; v < mesh->mNumVertices; v++) {
@@ -74,6 +76,26 @@ bool ModelLoader::LoadXFile(const char* filepath, Model& outModel) {
                 vertex.v = 0.0f;
             }
             
+            // Tangent and Bitangent (for normal mapping)
+            if (mesh->HasTangentsAndBitangents()) {
+                vertex.tx = mesh->mTangents[v].x;
+                vertex.ty = mesh->mTangents[v].y;
+                vertex.tz = mesh->mTangents[v].z;
+                
+                vertex.bx = mesh->mBitangents[v].x;
+                vertex.by = mesh->mBitangents[v].y;
+                vertex.bz = mesh->mBitangents[v].z;
+            } else {
+                // Default tangent space if not available
+                vertex.tx = 1.0f;
+                vertex.ty = 0.0f;
+                vertex.tz = 0.0f;
+                
+                vertex.bx = 0.0f;
+                vertex.by = 0.0f;
+                vertex.bz = 1.0f;
+            }
+            
             modelMesh.vertices.push_back(vertex);
         }
 
@@ -85,10 +107,11 @@ bool ModelLoader::LoadXFile(const char* filepath, Model& outModel) {
             }
         }
 
-        // Extract texture path
+        // Extract texture paths
         if (mesh->mMaterialIndex >= 0) {
             aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
             
+            // Diffuse texture
             if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0) {
                 aiString texPath;
                 material->GetTexture(aiTextureType_DIFFUSE, 0, &texPath);
@@ -98,6 +121,26 @@ bool ModelLoader::LoadXFile(const char* filepath, Model& outModel) {
                 modelMesh.texturePath = fullPath;
                 
                 std::printf("  Texture: %s\n", fullPath.c_str());
+            }
+            
+            // Normal map (height/bump map in Assimp terminology)
+            if (material->GetTextureCount(aiTextureType_NORMALS) > 0) {
+                aiString texPath;
+                material->GetTexture(aiTextureType_NORMALS, 0, &texPath);
+                
+                std::string fullPath = outModel.directory + texPath.C_Str();
+                modelMesh.normalMapPath = fullPath;
+                
+                std::printf("  Normal map: %s\n", fullPath.c_str());
+            } else if (material->GetTextureCount(aiTextureType_HEIGHT) > 0) {
+                // Try height map as fallback (some formats use this for normals)
+                aiString texPath;
+                material->GetTexture(aiTextureType_HEIGHT, 0, &texPath);
+                
+                std::string fullPath = outModel.directory + texPath.C_Str();
+                modelMesh.normalMapPath = fullPath;
+                
+                std::printf("  Normal map (from height): %s\n", fullPath.c_str());
             }
         }
 

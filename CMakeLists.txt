@@ -10,11 +10,14 @@ set(SOURCES
   main.cpp
   app.cpp
   app.h
+  dds_loader.h
   debug.h
   renderer_opengl.cpp
   renderer.h
   model_assimp.cpp
   model.h
+  normal_map_gen.h
+  scene.h
   stb_image_impl.cpp
   texture_cache.h
 )

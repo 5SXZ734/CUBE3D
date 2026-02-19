@@ -79,6 +79,10 @@ private:
     // Ground plane
     uint32_t m_groundMesh;
     bool m_showGround;
+    
+    // Procedural normal map for testing
+    uint32_t m_proceduralNormalMap;
+    bool m_useNormalMapping;
 
     // Camera/input state (single object mode)
     bool m_dragging;
