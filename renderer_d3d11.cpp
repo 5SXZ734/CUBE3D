@@ -100,6 +100,11 @@ private:
     int m_height;
     
     float m_clearColor[4];
+    
+    // Store view-projection for instanced rendering
+    XMMATRIX m_viewProj;
+    bool m_hasViewProj;
+    bool m_inInstancedDraw;
 
     // Helper to get HWND from GLFWwindow
     HWND getHWND(GLFWwindow* window) {
@@ -247,6 +252,8 @@ public:
         , m_currentShader(0)
         , m_width(1280)
         , m_height(720)
+        , m_hasViewProj(false)
+        , m_inInstancedDraw(false)
     {
         m_clearColor[0] = 0.0f;
         m_clearColor[1] = 0.0f;
@@ -560,8 +567,17 @@ public:
     }
 
     void setUniformMat4(uint32_t shaderHandle, const char* name, const Mat4& matrix) override {
+        static bool debugOnce = true;
+        if (debugOnce) {
+            printf("D3D11 setUniformMat4: shader=%u, name=%s\n", shaderHandle, name);
+            debugOnce = false;
+        }
+        
         auto it = m_shaders.find(shaderHandle);
-        if (it == m_shaders.end()) return;
+        if (it == m_shaders.end()) {
+            printf("D3D11 setUniformMat4: Shader %u NOT FOUND!\n", shaderHandle);
+            return;
+        }
 
         D3D11Shader& shader = it->second;
 
@@ -572,6 +588,20 @@ public:
 
         if (strcmp(name, "uMVP") == 0) {
             shader.cbData.mvp = xm;
+            
+            // Store view-projection for instanced rendering
+            // Only store when NOT in instanced draw to prevent overwriting
+            if (!m_inInstancedDraw) {
+                m_viewProj = xm;
+                m_hasViewProj = true;
+                
+                static bool once = true;
+                if (once) {
+                    printf("D3D11: Stored viewProj, inInstancedDraw=%d, hasViewProj=%d\n", 
+                           m_inInstancedDraw, m_hasViewProj);
+                    once = false;
+                }
+            }
         } else if (strcmp(name, "uWorld") == 0) {
             shader.cbData.world = xm;
         }
@@ -704,23 +734,65 @@ public:
     void drawMeshInstanced(uint32_t meshHandle, uint32_t textureHandle,
                           const InstanceData* instances, uint32_t instanceCount) override {
         if (instanceCount == 0 || !instances) return;
+        if (!m_hasViewProj) {
+            printf("D3D11: drawMeshInstanced called but no viewProj stored!\n");
+            return;
+        }
         
         auto shaderIt = m_shaders.find(m_currentShader);
         if (shaderIt == m_shaders.end()) return;
         
-        // Save current MVP (which should be view-projection)
-        XMMATRIX viewProj = shaderIt->second.cbData.mvp;
+        static int debugCount = 0;
+        if (debugCount < 3) {
+            printf("D3D11 drawMeshInstanced: mesh=%u, tex=%u, count=%u\n", 
+                   meshHandle, textureHandle, instanceCount);
+            printf("  ViewProj stored: %d\n", m_hasViewProj ? 1 : 0);
+            debugCount++;
+        }
         
-        // Fallback implementation: draw one at a time
+        // Set flag to prevent viewProj from being overwritten
+        m_inInstancedDraw = true;
+        
+        static bool printedTransform = false;
+        if (!printedTransform && instanceCount > 0) {
+            printf("D3D11: First instance transform:\n");
+            printf("  [%.2f %.2f %.2f %.2f]\n", 
+                   instances[0].worldMatrix.m[0], instances[0].worldMatrix.m[1],
+                   instances[0].worldMatrix.m[2], instances[0].worldMatrix.m[3]);
+            printf("  [%.2f %.2f %.2f %.2f]\n", 
+                   instances[0].worldMatrix.m[4], instances[0].worldMatrix.m[5],
+                   instances[0].worldMatrix.m[6], instances[0].worldMatrix.m[7]);
+            printf("  [%.2f %.2f %.2f %.2f]\n", 
+                   instances[0].worldMatrix.m[8], instances[0].worldMatrix.m[9],
+                   instances[0].worldMatrix.m[10], instances[0].worldMatrix.m[11]);
+            printf("  [%.2f %.2f %.2f %.2f]\n", 
+                   instances[0].worldMatrix.m[12], instances[0].worldMatrix.m[13],
+                   instances[0].worldMatrix.m[14], instances[0].worldMatrix.m[15]);
+            printedTransform = true;
+        }
+        
+        // Fallback implementation: draw one at a time using stored viewProj
         for (uint32_t i = 0; i < instanceCount; i++) {
+            // World matrix from instance data needs to be transposed to match viewProj
             XMMATRIX world = Mat4ToXM(instances[i].worldMatrix);
-            XMMATRIX mvp = XMMatrixMultiply(world, viewProj);  // Note: world * VP order
+            world = XMMatrixTranspose(world);
+            
+            // Both world and viewProj are transposed
+            // XMMatrixMultiply(A, B) computes A * B
+            // We have: world^T and viewProj^T
+            // We want: MVP = viewProj * world
+            // Since (AB)^T = B^T * A^T, we need: viewProj^T * world^T to get (world * viewProj)^T
+            // But we want (viewProj * world)^T, so we compute: world^T * viewProj^T
+            // Wait, that gives us (viewProj * world)^T which is what D3D expects!
+            XMMATRIX mvp = XMMatrixMultiply(m_viewProj, world);  // viewProj * world (both transposed)
             
             shaderIt->second.cbData.world = world;
             shaderIt->second.cbData.mvp = mvp;
             
             drawMesh(meshHandle, textureHandle);
         }
+        
+        m_inInstancedDraw = false;
     }
 
     void setDepthTest(bool enable) override {

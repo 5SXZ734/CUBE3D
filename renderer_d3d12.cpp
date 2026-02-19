@@ -116,10 +116,10 @@ struct D3D12Mesh {
 
 // ==================== Constant Buffer ====================
 struct CBData {
-    XMMATRIX mvp;
-    XMMATRIX world;
-    XMFLOAT3 lightDir;
-    float    useTexture;
+    XMMATRIX world;     // 64 bytes
+    XMFLOAT3 lightDir;  // 12 bytes
+    float    useTexture;// 4 bytes
+    // Total: 80 bytes (padding will align to 256)
 };
 
 // Helper to convert Mat4 to XMMATRIX
@@ -143,10 +143,15 @@ struct D3D12Shader {
 static const char* g_hlslSrc = R"(
 cbuffer CB : register(b0)
 {
-    float4x4 uMVP;
     float4x4 uWorld;
     float3   uLightDir;
     float    uUseTexture;
+};
+
+// Root constants for MVP matrix (b1 register)
+cbuffer MVPConstants : register(b1)
+{
+    float4x4 uMVP;
 };
 
 Texture2D    gTex     : register(t0);
@@ -228,6 +233,12 @@ private:
     int m_width  = 1280;
     int m_height = 720;
     float m_clearColor[4] = {0,0,0,1};
+    
+    // Store view-projection for instanced rendering
+    XMMATRIX m_viewProj;
+    bool m_hasViewProj = false;
+    bool m_inInstancedDraw = false;
+    bool m_skipCBUpdate = false;  // Skip CB update in drawMesh when we've already done it
     bool m_depthTestEnabled  = true;
     bool m_cullingEnabled    = false;
 
@@ -686,8 +697,12 @@ public:
             return 0;
         }
 
-        // Root signature: [0] = CBV(b0), [1] = SRV(t0), [2] = Sampler(s0)
+        // Root signature: 
+        // [0] = CBV(b0) for world, lightDir, useTexture (96 bytes)
+        // [1] = SRV(t0) for texture
+        // [2] = Root constants for MVP matrix (64 bytes = 16 DWORDs)
         D3D12_ROOT_PARAMETER rootParams[3] = {};
+        
         rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         rootParams[0].Descriptor.ShaderRegister = 0;
         rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -702,6 +717,13 @@ public:
         rootParams[1].DescriptorTable.NumDescriptorRanges = 1;
         rootParams[1].DescriptorTable.pDescriptorRanges   = &srvRange;
         rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        
+        // NEW: Root constants for MVP matrix (16 float4s = 64 bytes = 16 DWORDs)
+        rootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParams[2].Constants.ShaderRegister = 1;  // b1 register
+        rootParams[2].Constants.RegisterSpace = 0;
+        rootParams[2].Constants.Num32BitValues = 16;  // 4x4 matrix = 16 floats
+        rootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
         D3D12_STATIC_SAMPLER_DESC sampler = {};
         sampler.Filter         = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -713,7 +735,7 @@ public:
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters     = 2;  // CBV + SRV table
+        rsDesc.NumParameters     = 3;  // CBV + SRV table + Root constants
         rsDesc.pParameters       = rootParams;
         rsDesc.NumStaticSamplers = 1;
         rsDesc.pStaticSamplers   = &sampler;
@@ -774,7 +796,6 @@ public:
         
         std::printf("D3D12: Shader created successfully\n");
 
-        shader.cbData.mvp        = XMMatrixIdentity();
         shader.cbData.world      = XMMatrixIdentity();
         shader.cbData.lightDir   = XMFLOAT3(0,-1,0);
         shader.cbData.useTexture = 0.0f;
@@ -800,11 +821,35 @@ public:
 
     // ================================================================
     void setUniformMat4(uint32_t h, const char* name, const Mat4& m) override {
+        static bool debugOnce = true;
+        if (debugOnce) {
+            printf("D3D12 setUniformMat4: shader=%u, name=%s\n", h, name);
+            debugOnce = false;
+        }
+        
         auto it = m_shaders.find(h);
-        if (it == m_shaders.end()) return;
+        if (it == m_shaders.end()) {
+            printf("D3D12 setUniformMat4: Shader %u NOT FOUND!\n", h);
+            return;
+        }
         XMMATRIX xm = XMMatrixTranspose(XMLoadFloat4x4((const XMFLOAT4X4*)m.m));
-        if      (strcmp(name, "uMVP")   == 0) it->second.cbData.mvp   = xm;
-        else if (strcmp(name, "uWorld") == 0) it->second.cbData.world = xm;
+        
+        if (strcmp(name, "uMVP") == 0) {
+            // MVP is now a root constant, not in the constant buffer
+            // Store for later use in drawMesh/drawMeshInstanced
+            if (!m_inInstancedDraw) {
+                m_viewProj = xm;
+                m_hasViewProj = true;
+                
+                static bool once = true;
+                if (once) {
+                    printf("D3D12: Stored viewProj for root constants, hasViewProj=%d\n", m_hasViewProj);
+                    once = false;
+                }
+            }
+        } else if (strcmp(name, "uWorld") == 0) {
+            it->second.cbData.world = xm;
+        }
     }
 
     void setUniformVec3(uint32_t h, const char* name, const Vec3& v) override {
@@ -964,29 +1009,29 @@ public:
         auto meshIt = m_meshes.find(meshHandle);
         if (meshIt == m_meshes.end()) return;
 
-        // Update CB for current frame
+        // Update CB for current frame (world, lightDir, useTexture)
         auto shIt = m_shaders.find(m_currentShader);
-        if (shIt != m_shaders.end()) {
+        if (shIt != m_shaders.end() && !m_skipCBUpdate) {
             D3D12Shader& sh = shIt->second;
             sh.cbData.useTexture = (textureHandle > 0) ? 1.0f : 0.0f;
             
-            static int debugCount = 0;
-            if (debugCount < 5) {
-                std::printf("D3D12 drawMesh #%d:\n", debugCount);
-                std::printf("  Frame: %d, Texture handle: %d, useTexture: %f\n", 
-                           m_frameIndex, textureHandle, sh.cbData.useTexture);
-                std::printf("  MVP[0]: %f, World[0]: %f, LightDir: (%f,%f,%f)\n",
-                           sh.cbData.mvp.r[0].m128_f32[0],
-                           sh.cbData.world.r[0].m128_f32[0],
-                           sh.cbData.lightDir.x, sh.cbData.lightDir.y, sh.cbData.lightDir.z);
-                debugCount++;
-            }
-            
             memcpy(m_cbvDataBegin[m_frameIndex], &sh.cbData, sizeof(CBData));
             
-            // Bind the current frame's constant buffer
+            // Bind the current frame's constant buffer (b0)
             m_commandList->SetGraphicsRootConstantBufferView(0,
                 m_constantBuffers[m_frameIndex]->GetGPUVirtualAddress());
+        } else if (shIt != m_shaders.end()) {
+            // Still need to bind the CB even if we skip the update
+            m_commandList->SetGraphicsRootConstantBufferView(0,
+                m_constantBuffers[m_frameIndex]->GetGPUVirtualAddress());
+        }
+        
+        // Push MVP matrix as root constants (root parameter 2, b1 register)
+        // This works even with 800 draws because each draw gets its own constants!
+        if (m_hasViewProj) {
+            XMFLOAT4X4 mvpData;
+            XMStoreFloat4x4(&mvpData, m_viewProj);
+            m_commandList->SetGraphicsRoot32BitConstants(2, 16, &mvpData, 0);
         }
 
         // Bind texture SRV (or dummy at index 1 if no texture)
@@ -1027,23 +1072,103 @@ public:
     void drawMeshInstanced(uint32_t meshHandle, uint32_t textureHandle,
                           const InstanceData* instances, uint32_t instanceCount) override {
         if (instanceCount == 0 || !instances) return;
+        if (!m_hasViewProj) {
+            printf("D3D12: drawMeshInstanced called but no viewProj stored!\n");
+            return;
+        }
         
         auto shIt = m_shaders.find(m_currentShader);
         if (shIt == m_shaders.end()) return;
         
-        // Save current MVP (which should be view-projection)
-        XMMATRIX viewProj = shIt->second.cbData.mvp;
-        
-        // Fallback implementation: draw one at a time
-        for (uint32_t i = 0; i < instanceCount; i++) {
-            XMMATRIX world = Mat4ToXM(instances[i].worldMatrix);
-            XMMATRIX mvp = XMMatrixMultiply(world, viewProj);  // Note: world * VP order
-            
-            shIt->second.cbData.world = world;
-            shIt->second.cbData.mvp = mvp;
-            
-            drawMesh(meshHandle, textureHandle);
+        static int debugCount = 0;
+        static int totalDraws = 0;
+        if (debugCount < 3) {
+            printf("D3D12 drawMeshInstanced: mesh=%u, tex=%u, count=%u\n", 
+                   meshHandle, textureHandle, instanceCount);
+            printf("  ViewProj stored: %d\n", m_hasViewProj ? 1 : 0);
+            debugCount++;
         }
+        
+        // Set flag to prevent viewProj from being overwritten
+        m_inInstancedDraw = true;
+        
+        // Fallback implementation: draw one at a time using stored viewProj
+        // CRITICAL: D3D12 has one CB per frame, so we can't use drawMesh which shares the CB
+        // We must inline everything and hope the GPU reads CB values at draw time (it doesn't!)
+        
+        static bool printedOnce = false;
+        if (!printedOnce && instanceCount > 0) {
+            printf("D3D12 drawMeshInstanced DETAILED DEBUG:\n");
+            printf("  Mesh: %u, Texture: %u, InstanceCount: %u\n", meshHandle, textureHandle, instanceCount);
+            printf("  Frame index: %u\n", m_frameIndex);
+            printf("  CB address: %p\n", m_cbvDataBegin[m_frameIndex]);
+            printf("  First instance world[12]=%f (X position)\n", instances[0].worldMatrix.m[12]);
+            printf("  Last instance world[12]=%f (X position)\n", instances[instanceCount-1].worldMatrix.m[12]);
+            printedOnce = true;
+        }
+        
+        auto meshIt = m_meshes.find(meshHandle);
+        if (meshIt == m_meshes.end()) {
+            printf("D3D12: Mesh %u not found!\n", meshHandle);
+            m_inInstancedDraw = false;
+            return;
+        }
+        D3D12Mesh& mesh = meshIt->second;
+        
+        for (uint32_t i = 0; i < instanceCount; i++) {
+            // World matrix from instance data needs to be transposed to match viewProj
+            XMMATRIX world = Mat4ToXM(instances[i].worldMatrix);
+            world = XMMatrixTranspose(world);
+            
+            // Both world and viewProj are transposed
+            // Multiply in correct order: viewProj * world (both already transposed)
+            XMMATRIX mvp = XMMatrixMultiply(m_viewProj, world);
+            
+            // Update constant buffer with world matrix (b0)
+            shIt->second.cbData.world = world;
+            shIt->second.cbData.useTexture = (textureHandle > 0) ? 1.0f : 0.0f;
+            memcpy(m_cbvDataBegin[m_frameIndex], &shIt->second.cbData, sizeof(CBData));
+            
+            // Bind CB (b0)
+            m_commandList->SetGraphicsRootConstantBufferView(0,
+                m_constantBuffers[m_frameIndex]->GetGPUVirtualAddress());
+            
+            // CRITICAL: Push MVP as root constants (root parameter 2, b1)
+            // Each draw gets its own MVP - THIS is what makes it work!
+            XMFLOAT4X4 mvpData;
+            XMStoreFloat4x4(&mvpData, mvp);
+            m_commandList->SetGraphicsRoot32BitConstants(2, 16, &mvpData, 0);
+            
+            // Bind texture
+            D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = m_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
+            if (textureHandle > 0) {
+                auto texIt = m_textures.find(textureHandle);
+                if (texIt != m_textures.end()) {
+                    srvGpu.ptr += texIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
+                } else {
+                    srvGpu.ptr += 1 * m_cbvSrvDescriptorSize;  // Dummy texture
+                }
+            } else {
+                srvGpu.ptr += 1 * m_cbvSrvDescriptorSize;  // Dummy texture
+            }
+            m_commandList->SetGraphicsRootDescriptorTable(1, srvGpu);
+            
+            // Draw this instance
+            m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            m_commandList->IASetVertexBuffers(0, 1, &mesh.vertexBufferView);
+            m_commandList->IASetIndexBuffer(&mesh.indexBufferView);
+            m_commandList->DrawIndexedInstanced(mesh.indexCount, 1, 0, 0, 0);
+            
+            totalDraws++;
+        }
+        
+        static bool printedTotal = false;
+        if (totalDraws >= 800 && !printedTotal) {
+            printf("D3D12: Total draws = %d\n", totalDraws);
+            printedTotal = true;
+        }
+        
+        m_inInstancedDraw = false;
     }
 
     void setDepthTest(bool enable) override { m_depthTestEnabled = enable; }
