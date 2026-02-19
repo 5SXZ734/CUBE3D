@@ -45,6 +45,7 @@ private:
     bool loadModel(const char* path);
     void createExampleScene();  // Create 100 airplanes
     void createGroundPlane();   // Create ground grid
+    void updateFPSCamera(float deltaTime);  // Update FPS camera for scene mode
     Mat4 createTransformMatrix(float x, float y, float z, float rotY, float scale);
 
     // Window
@@ -79,13 +80,26 @@ private:
     uint32_t m_groundMesh;
     bool m_showGround;
 
-    // Camera/input state
+    // Camera/input state (single object mode)
     bool m_dragging;
     double m_lastX;
     double m_lastY;
     float m_yaw;
     float m_pitch;
     float m_distance;
+    
+    // FPS camera state (scene mode)
+    Vec3 m_cameraPos;
+    Vec3 m_cameraForward;
+    Vec3 m_cameraRight;
+    Vec3 m_cameraUp;
+    float m_cameraYaw;
+    float m_cameraPitch;
+    float m_moveSpeed;
+    bool m_firstMouse;
+    double m_lastMouseX, m_lastMouseY;
+    bool m_wPressed, m_aPressed, m_sPressed, m_dPressed;
+    bool m_spacePressed, m_shiftPressed;
 
     // Timing
     double m_lastFrameTime;

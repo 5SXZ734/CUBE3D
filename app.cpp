@@ -130,6 +130,22 @@ CubeApp::CubeApp()
     , m_yaw(0.6f)
     , m_pitch(-0.4f)
     , m_distance(3.5f)
+    , m_cameraPos({0, 20.0f, 80.0f})  // Start position for FPS camera
+    , m_cameraForward({0, 0, -1})
+    , m_cameraRight({1, 0, 0})
+    , m_cameraUp({0, 1, 0})
+    , m_cameraYaw(0.0f)  // Facing -Z (yaw=0 means looking along -Z)
+    , m_cameraPitch(0.0f)  // Level (no pitch)
+    , m_moveSpeed(30.0f)  // Units per second
+    , m_firstMouse(true)
+    , m_lastMouseX(0.0)
+    , m_lastMouseY(0.0)
+    , m_wPressed(false)
+    , m_aPressed(false)
+    , m_sPressed(false)
+    , m_dPressed(false)
+    , m_spacePressed(false)
+    , m_shiftPressed(false)
     , m_lastFrameTime(0.0)
     , m_startTime(0.0)
     , m_debugMode(false)
@@ -514,27 +530,24 @@ void CubeApp::render() {
 
     // Render in scene mode or single object mode
     if (m_useSceneMode && m_hasModel) {
-        // Scene mode: render 100 airplanes
-        // Grid spans roughly -67 to +67 in X/Z (10 objects * 15 spacing)
-        // Camera needs to be far enough to see all
+        // Scene mode: FPS camera controls
+        // Update FPS camera
+        float deltaTime = (float)(glfwGetTime() - m_lastFrameTime);
+        updateFPSCamera(deltaTime);
         
-        // Position camera high and far back for good overview
-        float sceneCameraDistance = 120.0f;  // Fixed distance for scene view
-        float sceneCameraHeight = 60.0f;     // High up to look down at grid
+        // Build view matrix from FPS camera
+        Vec3 target = {
+            m_cameraPos.x + m_cameraForward.x,
+            m_cameraPos.y + m_cameraForward.y,
+            m_cameraPos.z + m_cameraForward.z
+        };
         
-        Mat4 view = mat4_lookAtRH(
-            {0, sceneCameraHeight, sceneCameraDistance},  // Eye position
-            {0, 0, 0},                                     // Look at center
-            {0, 1, 0}                                      // Up vector
-        );
-        Mat4 proj = mat4_perspectiveRH_NO(60.0f * 3.14159265359f / 180.0f, aspect, 0.1f, 500.0f);
+        // Use world up (0,1,0) directly - simpler and more reliable
+        Vec3 worldUp = {0, 1, 0};
+        Mat4 view = mat4_lookAtRH(m_cameraPos, target, worldUp);
+        Mat4 proj = mat4_perspectiveRH_NO(60.0f * 3.14159265359f / 180.0f, aspect, 0.1f, 1000.0f);
         Mat4 viewProj = mat4_mul(proj, view);
         
-        // The scene will call drawMeshInstanced which will:
-        // 1. Multiply viewProj * instance.worldMatrix to get MVP
-        // 2. Set MVP and World uniforms
-        // 3. Draw the mesh
-        // So we just set view-projection once here for reference
         m_renderer->setUniformMat4(m_shader, "uMVP", viewProj);
         
         // Draw ground plane first
@@ -599,6 +612,14 @@ void CubeApp::onFramebufferSize(int width, int height) {
 
 void CubeApp::onMouseButton(int button, int action, int mods) {
     (void)mods;  // Unused
+    
+    if (m_useSceneMode) {
+        // In scene mode, capture mouse for FPS look
+        // Mouse is always captured in scene mode
+        return;
+    }
+    
+    // Single object mode: drag to rotate
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
         if (action == GLFW_PRESS) {
             m_dragging = true;
@@ -610,6 +631,31 @@ void CubeApp::onMouseButton(int button, int action, int mods) {
 }
 
 void CubeApp::onCursorPos(double x, double y) {
+    if (m_useSceneMode) {
+        // FPS camera look in scene mode
+        if (m_firstMouse) {
+            m_lastMouseX = x;
+            m_lastMouseY = y;
+            m_firstMouse = false;
+            return;
+        }
+        
+        double dx = x - m_lastMouseX;
+        double dy = y - m_lastMouseY;
+        m_lastMouseX = x;
+        m_lastMouseY = y;
+        
+        const float sensitivity = 0.002f;  // Mouse sensitivity
+        m_cameraYaw += (float)dx * sensitivity;  // Changed to + for correct direction
+        m_cameraPitch += (float)dy * sensitivity;  // Positive: mouse down = look down
+        
+        // Clamp pitch to prevent flipping
+        const float pitchLimit = 1.5708f;  // ~90 degrees
+        m_cameraPitch = std::clamp(m_cameraPitch, -pitchLimit, pitchLimit);
+        return;
+    }
+    
+    // Single object mode: drag to rotate
     if (!m_dragging) return;
 
     double dx = x - m_lastX;
@@ -627,6 +673,16 @@ void CubeApp::onCursorPos(double x, double y) {
 
 void CubeApp::onScroll(double xoffset, double yoffset) {
     (void)xoffset;  // Unused
+    
+    if (m_useSceneMode) {
+        // In scene mode, scroll changes movement speed
+        m_moveSpeed += (float)yoffset * 5.0f;
+        m_moveSpeed = std::clamp(m_moveSpeed, 5.0f, 100.0f);
+        LOG_INFO("Move speed: %.1f", m_moveSpeed);
+        return;
+    }
+    
+    // Single object mode: scroll to zoom
     m_distance -= (float)yoffset * 0.25f;
     m_distance = std::clamp(m_distance, 1.5f, 12.0f);
 }
@@ -638,15 +694,23 @@ void CubeApp::onKey(int key, int scancode, int action, int mods) {
         glfwSetWindowShouldClose(m_window, 1);
     }
     
-    // Toggle scene mode with 'S' key
-    if (key == GLFW_KEY_S && action == GLFW_PRESS) {
+    // FPS camera controls (WASD + Space + Shift)
+    if (key == GLFW_KEY_W) m_wPressed = (action != GLFW_RELEASE);
+    if (key == GLFW_KEY_A) m_aPressed = (action != GLFW_RELEASE);
+    if (key == GLFW_KEY_S) m_sPressed = (action != GLFW_RELEASE);
+    if (key == GLFW_KEY_D) m_dPressed = (action != GLFW_RELEASE);
+    if (key == GLFW_KEY_SPACE) m_spacePressed = (action != GLFW_RELEASE);
+    if (key == GLFW_KEY_LEFT_SHIFT || key == GLFW_KEY_RIGHT_SHIFT) 
+        m_shiftPressed = (action != GLFW_RELEASE);
+    
+    // Toggle scene mode with 'T' key (changed from S to avoid conflict)
+    if (key == GLFW_KEY_T && action == GLFW_PRESS) {
         m_useSceneMode = !m_useSceneMode;
         
         if (m_useSceneMode) {
-            LOG_INFO("Scene mode ENABLED - showing 100 airplanes");
-            LOG_INFO("TIP: Press 'B' to toggle background (dark/light)");
-            LOG_INFO("TIP: Scroll to zoom, drag mouse to rotate view");
-            LOG_WARNING("NOTE: D3D12 scene mode has known issues - use OpenGL or D3D11");
+            LOG_INFO("Scene mode ENABLED - FPS camera controls");
+            LOG_INFO("WASD to move, Mouse to look, Space/Shift for up/down, Shift to sprint");
+            LOG_INFO("Press 'B' to toggle background, 'G' to toggle ground");
             
             if (m_hasModel) {
                 createExampleScene();
@@ -831,5 +895,77 @@ void CubeApp::createGroundPlane() {
     
     LOG_INFO("Ground plane created: %zu vertices, %zu triangles", 
              vertices.size(), indices.size() / 3);
+}
+
+// Update FPS camera for scene mode
+void CubeApp::updateFPSCamera(float deltaTime) {
+    // Standard FPS camera: yaw=0 looks along -Z, pitch=0 is level
+    // Forward vector calculation using spherical coordinates
+    float cosPitch = std::cos(m_cameraPitch);
+    m_cameraForward.x = cosPitch * std::sin(m_cameraYaw);
+    m_cameraForward.y = -std::sin(m_cameraPitch);  // Negative for correct up/down
+    m_cameraForward.z = -cosPitch * std::cos(m_cameraYaw);  // Negative for -Z at yaw=0
+    
+    // Normalize forward vector
+    float len = std::sqrt(m_cameraForward.x * m_cameraForward.x + 
+                         m_cameraForward.y * m_cameraForward.y + 
+                         m_cameraForward.z * m_cameraForward.z);
+    if (len > 0.0001f) {
+        m_cameraForward.x /= len;
+        m_cameraForward.y /= len;
+        m_cameraForward.z /= len;
+    }
+    
+    // Calculate right vector (cross product: worldUp × forward)
+    Vec3 worldUp = {0, 1, 0};
+    m_cameraRight.x = worldUp.y * m_cameraForward.z - worldUp.z * m_cameraForward.y;
+    m_cameraRight.y = worldUp.z * m_cameraForward.x - worldUp.x * m_cameraForward.z;
+    m_cameraRight.z = worldUp.x * m_cameraForward.y - worldUp.y * m_cameraForward.x;
+    
+    // Normalize right vector
+    len = std::sqrt(m_cameraRight.x * m_cameraRight.x + 
+                   m_cameraRight.y * m_cameraRight.y + 
+                   m_cameraRight.z * m_cameraRight.z);
+    if (len > 0.0001f) {
+        m_cameraRight.x /= len;
+        m_cameraRight.y /= len;
+        m_cameraRight.z /= len;
+    }
+    
+    // Calculate up vector (cross product of right and forward)
+    m_cameraUp.x = m_cameraRight.y * m_cameraForward.z - m_cameraRight.z * m_cameraForward.y;
+    m_cameraUp.y = m_cameraRight.z * m_cameraForward.x - m_cameraRight.x * m_cameraForward.z;
+    m_cameraUp.z = m_cameraRight.x * m_cameraForward.y - m_cameraRight.y * m_cameraForward.x;
+    
+    // Handle movement input
+    float speed = m_moveSpeed * deltaTime;
+    if (m_shiftPressed) speed *= 2.0f;  // Sprint
+    
+    if (m_wPressed) {  // Forward
+        m_cameraPos.x += m_cameraForward.x * speed;
+        m_cameraPos.y += m_cameraForward.y * speed;
+        m_cameraPos.z += m_cameraForward.z * speed;
+    }
+    if (m_sPressed) {  // Backward
+        m_cameraPos.x -= m_cameraForward.x * speed;
+        m_cameraPos.y -= m_cameraForward.y * speed;
+        m_cameraPos.z -= m_cameraForward.z * speed;
+    }
+    if (m_aPressed) {  // Left
+        m_cameraPos.x += m_cameraRight.x * speed;  // Changed to + (was -)
+        m_cameraPos.y += m_cameraRight.y * speed;
+        m_cameraPos.z += m_cameraRight.z * speed;
+    }
+    if (m_dPressed) {  // Right
+        m_cameraPos.x -= m_cameraRight.x * speed;  // Changed to - (was +)
+        m_cameraPos.y -= m_cameraRight.y * speed;
+        m_cameraPos.z -= m_cameraRight.z * speed;
+    }
+    if (m_spacePressed) {  // Up
+        m_cameraPos.y += speed;
+    }
+    if (m_shiftPressed && !m_wPressed && !m_sPressed && !m_aPressed && !m_dPressed) {  // Down (when not used for sprint)
+        m_cameraPos.y -= speed;
+    }
 }
 
