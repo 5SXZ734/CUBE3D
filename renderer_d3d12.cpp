@@ -771,55 +771,69 @@ public:
 
         // Root signature: 
         // [0] = CBV(b0) for world matrix only (64 bytes)
-        // [1] = SRV descriptor table (t0=diffuse, t1=normal map)
-        // [2] = Root constants for MVP matrix (16 floats)
-        // [3] = Root constants for lightDir (3 floats)
-        // [4] = Root constant for useTexture (1 float)
-        // [5] = Root constant for useNormalMap (1 float)
-        D3D12_ROOT_PARAMETER rootParams[6] = {};
+        // [1] = SRV descriptor table for diffuse texture (t0) - SINGLE descriptor
+        // [2] = SRV descriptor table for normal map (t1) - SINGLE descriptor  
+        // [3] = Root constants for MVP matrix (16 floats)
+        // [4] = Root constants for lightDir (3 floats)
+        // [5] = Root constant for useTexture (1 float)
+        // [6] = Root constant for useNormalMap (1 float)
+        D3D12_ROOT_PARAMETER rootParams[7] = {};
         
         rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         rootParams[0].Descriptor.ShaderRegister = 0;
         rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-        D3D12_DESCRIPTOR_RANGE srvRange = {};
-        srvRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        srvRange.NumDescriptors     = 2;  // Changed to 2 for diffuse + normal map
-        srvRange.BaseShaderRegister = 0;  // Starts at t0
-        srvRange.OffsetInDescriptorsFromTableStart = 0;
+        // Diffuse texture (t0) - separate table
+        D3D12_DESCRIPTOR_RANGE diffuseRange = {};
+        diffuseRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        diffuseRange.NumDescriptors     = 1;  // Just diffuse
+        diffuseRange.BaseShaderRegister = 0;  // t0
+        diffuseRange.OffsetInDescriptorsFromTableStart = 0;
 
         rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         rootParams[1].DescriptorTable.NumDescriptorRanges = 1;
-        rootParams[1].DescriptorTable.pDescriptorRanges   = &srvRange;
+        rootParams[1].DescriptorTable.pDescriptorRanges   = &diffuseRange;
         rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         
+        // Normal map (t1) - separate table
+        D3D12_DESCRIPTOR_RANGE normalRange = {};
+        normalRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        normalRange.NumDescriptors     = 1;  // Just normal
+        normalRange.BaseShaderRegister = 1;  // t1
+        normalRange.OffsetInDescriptorsFromTableStart = 0;
+
+        rootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        rootParams[2].DescriptorTable.NumDescriptorRanges = 1;
+        rootParams[2].DescriptorTable.pDescriptorRanges   = &normalRange;
+        rootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        
         // Root constants for MVP matrix (16 floats)
-        rootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        rootParams[2].Constants.ShaderRegister = 1;  // b1 register
-        rootParams[2].Constants.RegisterSpace = 0;
-        rootParams[2].Constants.Num32BitValues = 16;  // 4x4 matrix
-        rootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+        rootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParams[3].Constants.ShaderRegister = 1;  // b1 register
+        rootParams[3].Constants.RegisterSpace = 0;
+        rootParams[3].Constants.Num32BitValues = 16;  // 4x4 matrix
+        rootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
         
         // Root constants for lightDir (3 floats)
-        rootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        rootParams[3].Constants.ShaderRegister = 2;  // b2 register
-        rootParams[3].Constants.RegisterSpace = 0;
-        rootParams[3].Constants.Num32BitValues = 3;  // float3
-        rootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-        
-        // Root constant for useTexture (1 float)
         rootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        rootParams[4].Constants.ShaderRegister = 3;  // b3 register
+        rootParams[4].Constants.ShaderRegister = 2;  // b2 register
         rootParams[4].Constants.RegisterSpace = 0;
-        rootParams[4].Constants.Num32BitValues = 1;  // 1 float
+        rootParams[4].Constants.Num32BitValues = 3;  // float3
         rootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         
-        // Root constant for useNormalMap (1 float)
+        // Root constant for useTexture (1 float)
         rootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        rootParams[5].Constants.ShaderRegister = 4;  // b4 register
+        rootParams[5].Constants.ShaderRegister = 3;  // b3 register
         rootParams[5].Constants.RegisterSpace = 0;
         rootParams[5].Constants.Num32BitValues = 1;  // 1 float
         rootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        
+        // Root constant for useNormalMap (1 float)
+        rootParams[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParams[6].Constants.ShaderRegister = 4;  // b4 register
+        rootParams[6].Constants.RegisterSpace = 0;
+        rootParams[6].Constants.Num32BitValues = 1;  // 1 float
+        rootParams[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_STATIC_SAMPLER_DESC sampler = {};
         sampler.Filter         = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -831,7 +845,7 @@ public:
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters     = 6;  // CBV + SRV table + MVP + lightDir + useTexture + useNormalMap
+        rsDesc.NumParameters     = 7;  // CBV + diffuse table + normal table + MVP + lightDir + useTexture + useNormalMap
         rsDesc.pParameters       = rootParams;
         rsDesc.NumStaticSamplers = 1;
         rsDesc.pStaticSamplers   = &sampler;
@@ -1255,16 +1269,16 @@ public:
                 m_constantBuffers[m_frameIndex]->GetGPUVirtualAddress());
         }
         
-        // Push MVP matrix as root constants (root parameter 2, b1 register)
+        // Push MVP matrix as root constants (root parameter 3, b1 register) - moved to slot 3
         if (m_hasViewProj) {
             XMFLOAT4X4 mvpData;
             XMStoreFloat4x4(&mvpData, m_viewProj);
-            m_commandList->SetGraphicsRoot32BitConstants(2, 16, &mvpData, 0);
+            m_commandList->SetGraphicsRoot32BitConstants(3, 16, &mvpData, 0);
         }
         
-        // Push lightDir as root constants (root parameter 3, b2 register)
+        // Push lightDir as root constants (root parameter 4, b2 register) - moved to slot 4
         float lightDirData[3] = {m_lightDir.x, m_lightDir.y, m_lightDir.z};
-        m_commandList->SetGraphicsRoot32BitConstants(3, 3, lightDirData, 0);
+        m_commandList->SetGraphicsRoot32BitConstants(4, 3, lightDirData, 0);
         
         static int lightDebug = 0;
         if (lightDebug < 3) {
@@ -1273,49 +1287,57 @@ public:
             lightDebug++;
         }
         
-        // Push useTexture as root constant (root parameter 4, b3 register)
+        // Push useTexture as root constant (root parameter 5, b3 register) - moved to slot 5
         float useTextureValue = (textureHandle > 0) ? 1.0f : 0.0f;
-        m_commandList->SetGraphicsRoot32BitConstants(4, 1, &useTextureValue, 0);
+        m_commandList->SetGraphicsRoot32BitConstants(5, 1, &useTextureValue, 0);
         
-        // Push useNormalMap as root constant (root parameter 5, b4 register)
-        m_commandList->SetGraphicsRoot32BitConstants(5, 1, &m_useNormalMap, 0);
+        // Push useNormalMap as root constant (root parameter 6, b4 register) - moved to slot 6
+        m_commandList->SetGraphicsRoot32BitConstants(6, 1, &m_useNormalMap, 0);
 
-        // Simple approach: Always bind starting at slot 1 (dummy/diffuse) and slot 2 (normal)
-        // Slot 1 was initialized with dummy, we'll overwrite it each frame if needed
-        // Slot 2 was also initialized with dummy
+        // With separate descriptor tables, we can bind directly to each texture's SRV!
+        // No copying needed - just point to the actual SRV indices
         
-        D3D12_CPU_DESCRIPTOR_HANDLE cpuBase = m_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart();
+        D3D12_GPU_DESCRIPTOR_HANDLE srvGpuBase = m_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
         
-        // Update slot 1 with diffuse texture (or leave dummy)
-        D3D12_CPU_DESCRIPTOR_HANDLE slot1 = cpuBase;
-        slot1.ptr += 1 * m_cbvSrvDescriptorSize;
-        
+        // Bind diffuse texture table (root parameter 1, t0)
         if (textureHandle > 0) {
             auto texIt = m_textures.find(textureHandle);
             if (texIt != m_textures.end()) {
-                D3D12_CPU_DESCRIPTOR_HANDLE diffuseSrc = cpuBase;
-                diffuseSrc.ptr += texIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
-                m_device->CopyDescriptorsSimple(1, slot1, diffuseSrc, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                D3D12_GPU_DESCRIPTOR_HANDLE diffuseGpu = srvGpuBase;
+                diffuseGpu.ptr += texIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
+                m_commandList->SetGraphicsRootDescriptorTable(1, diffuseGpu);
+            } else {
+                // Bind dummy at slot 1
+                D3D12_GPU_DESCRIPTOR_HANDLE dummyGpu = srvGpuBase;
+                dummyGpu.ptr += 1 * m_cbvSrvDescriptorSize;
+                m_commandList->SetGraphicsRootDescriptorTable(1, dummyGpu);
             }
+        } else {
+            // Bind dummy at slot 1
+            D3D12_GPU_DESCRIPTOR_HANDLE dummyGpu = srvGpuBase;
+            dummyGpu.ptr += 1 * m_cbvSrvDescriptorSize;
+            m_commandList->SetGraphicsRootDescriptorTable(1, dummyGpu);
         }
         
-        // Update slot 2 with normal map (or leave dummy)  
-        D3D12_CPU_DESCRIPTOR_HANDLE slot2 = cpuBase;
-        slot2.ptr += 2 * m_cbvSrvDescriptorSize;
-        
+        // Bind normal map table (root parameter 2, t1)
         if (m_boundNormalMap > 0) {
             auto normalTexIt = m_textures.find(m_boundNormalMap);
             if (normalTexIt != m_textures.end()) {
-                D3D12_CPU_DESCRIPTOR_HANDLE normalSrc = cpuBase;
-                normalSrc.ptr += normalTexIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
-                m_device->CopyDescriptorsSimple(1, slot2, normalSrc, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                D3D12_GPU_DESCRIPTOR_HANDLE normalGpu = srvGpuBase;
+                normalGpu.ptr += normalTexIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
+                m_commandList->SetGraphicsRootDescriptorTable(2, normalGpu);
+            } else {
+                // Bind dummy
+                D3D12_GPU_DESCRIPTOR_HANDLE dummyGpu = srvGpuBase;
+                dummyGpu.ptr += 1 * m_cbvSrvDescriptorSize;
+                m_commandList->SetGraphicsRootDescriptorTable(2, dummyGpu);
             }
+        } else {
+            // Bind dummy
+            D3D12_GPU_DESCRIPTOR_HANDLE dummyGpu = srvGpuBase;
+            dummyGpu.ptr += 1 * m_cbvSrvDescriptorSize;
+            m_commandList->SetGraphicsRootDescriptorTable(2, dummyGpu);
         }
-        
-        // Bind descriptor table starting at slot 1 (reads slots 1 and 2)
-        D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = m_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
-        srvGpu.ptr += 1 * m_cbvSrvDescriptorSize;
-        m_commandList->SetGraphicsRootDescriptorTable(1, srvGpu);
 
         D3D12Mesh& mesh = meshIt->second;
         m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -1389,55 +1411,60 @@ public:
             m_commandList->SetGraphicsRootConstantBufferView(0,
                 m_constantBuffers[m_frameIndex]->GetGPUVirtualAddress());
             
-            // Push MVP as root constants (root parameter 2, b1)
+            // Push MVP as root constants (root parameter 3, b1) - updated from 2 to 3
             XMFLOAT4X4 mvpData;
             XMStoreFloat4x4(&mvpData, mvp);
-            m_commandList->SetGraphicsRoot32BitConstants(2, 16, &mvpData, 0);
+            m_commandList->SetGraphicsRoot32BitConstants(3, 16, &mvpData, 0);
             
-            // Push lightDir as root constants (root parameter 3, b2)
+            // Push lightDir as root constants (root parameter 4, b2) - updated from 3 to 4
             float lightDirData[3] = {m_lightDir.x, m_lightDir.y, m_lightDir.z};
-            m_commandList->SetGraphicsRoot32BitConstants(3, 3, lightDirData, 0);
+            m_commandList->SetGraphicsRoot32BitConstants(4, 3, lightDirData, 0);
             
-            // Push useTexture as root constant (root parameter 4, b3)
+            // Push useTexture as root constant (root parameter 5, b3) - updated from 4 to 5
             float useTextureValue = (textureHandle > 0) ? 1.0f : 0.0f;
-            m_commandList->SetGraphicsRoot32BitConstants(4, 1, &useTextureValue, 0);
+            m_commandList->SetGraphicsRoot32BitConstants(5, 1, &useTextureValue, 0);
             
-            // Push useNormalMap as root constant (root parameter 5, b4)
-            m_commandList->SetGraphicsRoot32BitConstants(5, 1, &m_useNormalMap, 0);
+            // Push useNormalMap as root constant (root parameter 6, b4) - updated from 5 to 6
+            m_commandList->SetGraphicsRoot32BitConstants(6, 1, &m_useNormalMap, 0);
             
-            // Use slots 1-2 approach (same as drawMesh)
-            D3D12_CPU_DESCRIPTOR_HANDLE cpuBase = m_cbvSrvHeap->GetCPUDescriptorHandleForHeapStart();
+            // Bind 2 separate descriptor tables - no copying!
+            D3D12_GPU_DESCRIPTOR_HANDLE srvGpuBase = m_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
             
-            // Update slot 1 with diffuse
-            D3D12_CPU_DESCRIPTOR_HANDLE slot1 = cpuBase;
-            slot1.ptr += 1 * m_cbvSrvDescriptorSize;
-            
+            // Bind diffuse (root parameter 1)
             if (textureHandle > 0) {
                 auto texIt = m_textures.find(textureHandle);
                 if (texIt != m_textures.end()) {
-                    D3D12_CPU_DESCRIPTOR_HANDLE diffuseSrc = cpuBase;
-                    diffuseSrc.ptr += texIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
-                    m_device->CopyDescriptorsSimple(1, slot1, diffuseSrc, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                    D3D12_GPU_DESCRIPTOR_HANDLE diffuseGpu = srvGpuBase;
+                    diffuseGpu.ptr += texIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
+                    m_commandList->SetGraphicsRootDescriptorTable(1, diffuseGpu);
+                } else {
+                    D3D12_GPU_DESCRIPTOR_HANDLE dummyGpu = srvGpuBase;
+                    dummyGpu.ptr += 1 * m_cbvSrvDescriptorSize;
+                    m_commandList->SetGraphicsRootDescriptorTable(1, dummyGpu);
                 }
+            } else {
+                D3D12_GPU_DESCRIPTOR_HANDLE dummyGpu = srvGpuBase;
+                dummyGpu.ptr += 1 * m_cbvSrvDescriptorSize;
+                m_commandList->SetGraphicsRootDescriptorTable(1, dummyGpu);
             }
             
-            // Update slot 2 with normal map
-            D3D12_CPU_DESCRIPTOR_HANDLE slot2 = cpuBase;
-            slot2.ptr += 2 * m_cbvSrvDescriptorSize;
-            
+            // Bind normal map (root parameter 2)
             if (m_boundNormalMap > 0) {
                 auto normalTexIt = m_textures.find(m_boundNormalMap);
                 if (normalTexIt != m_textures.end()) {
-                    D3D12_CPU_DESCRIPTOR_HANDLE normalSrc = cpuBase;
-                    normalSrc.ptr += normalTexIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
-                    m_device->CopyDescriptorsSimple(1, slot2, normalSrc, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                    D3D12_GPU_DESCRIPTOR_HANDLE normalGpu = srvGpuBase;
+                    normalGpu.ptr += normalTexIt->second.srvDescriptorIndex * m_cbvSrvDescriptorSize;
+                    m_commandList->SetGraphicsRootDescriptorTable(2, normalGpu);
+                } else {
+                    D3D12_GPU_DESCRIPTOR_HANDLE dummyGpu = srvGpuBase;
+                    dummyGpu.ptr += 1 * m_cbvSrvDescriptorSize;
+                    m_commandList->SetGraphicsRootDescriptorTable(2, dummyGpu);
                 }
+            } else {
+                D3D12_GPU_DESCRIPTOR_HANDLE dummyGpu = srvGpuBase;
+                dummyGpu.ptr += 1 * m_cbvSrvDescriptorSize;
+                m_commandList->SetGraphicsRootDescriptorTable(2, dummyGpu);
             }
-            
-            // Bind starting at slot 1
-            D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = m_cbvSrvHeap->GetGPUDescriptorHandleForHeapStart();
-            srvGpu.ptr += 1 * m_cbvSrvDescriptorSize;
-            m_commandList->SetGraphicsRootDescriptorTable(1, srvGpu);
             
             // Draw this instance
             m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
