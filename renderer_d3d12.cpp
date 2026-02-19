@@ -122,6 +122,16 @@ struct CBData {
     float    useTexture;
 };
 
+// Helper to convert Mat4 to XMMATRIX
+static XMMATRIX Mat4ToXM(const Mat4& m) {
+    return XMMATRIX(
+        m.m[0], m.m[1], m.m[2], m.m[3],
+        m.m[4], m.m[5], m.m[6], m.m[7],
+        m.m[8], m.m[9], m.m[10], m.m[11],
+        m.m[12], m.m[13], m.m[14], m.m[15]
+    );
+}
+
 // ==================== D3D12 Shader ====================
 struct D3D12Shader {
     ComPtr<ID3D12RootSignature> rootSignature;
@@ -1011,6 +1021,29 @@ public:
         m_commandList->IASetVertexBuffers(0, 1, &mesh.vertexBufferView);
         m_commandList->IASetIndexBuffer(&mesh.indexBufferView);
         m_commandList->DrawIndexedInstanced(mesh.indexCount, 1, 0, 0, 0);
+    }
+    
+    // Instanced drawing
+    void drawMeshInstanced(uint32_t meshHandle, uint32_t textureHandle,
+                          const InstanceData* instances, uint32_t instanceCount) override {
+        if (instanceCount == 0 || !instances) return;
+        
+        auto shIt = m_shaders.find(m_currentShader);
+        if (shIt == m_shaders.end()) return;
+        
+        // Save current MVP (which should be view-projection)
+        XMMATRIX viewProj = shIt->second.cbData.mvp;
+        
+        // Fallback implementation: draw one at a time
+        for (uint32_t i = 0; i < instanceCount; i++) {
+            XMMATRIX world = Mat4ToXM(instances[i].worldMatrix);
+            XMMATRIX mvp = XMMatrixMultiply(world, viewProj);  // Note: world * VP order
+            
+            shIt->second.cbData.world = world;
+            shIt->second.cbData.mvp = mvp;
+            
+            drawMesh(meshHandle, textureHandle);
+        }
     }
 
     void setDepthTest(bool enable) override { m_depthTestEnabled = enable; }

@@ -13,6 +13,14 @@ static Mat4 mat4_identity() {
     return r;
 }
 
+// SceneObject constructor implementation
+SceneObject::SceneObject()
+    : model(nullptr)
+    , transform(mat4_identity())
+    , colorTint({1.0f, 1.0f, 1.0f, 1.0f})
+    , visible(true)
+{}
+
 static Mat4 mat4_mul(const Mat4& a, const Mat4& b) {
     Mat4 r{};
     for (int c = 0; c < 4; ++c)
@@ -114,6 +122,8 @@ CubeApp::CubeApp()
     , m_renderer(nullptr)
     , m_shader(0)
     , m_hasModel(false)
+    , m_useSceneMode(false)
+    , m_useLightBackground(false)
     , m_dragging(false)
     , m_lastX(0.0)
     , m_lastY(0.0)
@@ -134,6 +144,10 @@ CubeApp::~CubeApp() {
 void CubeApp::printStats() const {
     m_stats.print();
     m_textureCache.printStats();
+    
+    if (m_useSceneMode) {
+        m_scene.printRenderStats();
+    }
 }
 
 bool CubeApp::initialize(RendererAPI api, const char* modelPath) {
@@ -477,45 +491,79 @@ bool CubeApp::createDefaultCube() {
 }
 
 void CubeApp::render() {
-    m_renderer->setClearColor(0.03f, 0.03f, 0.06f, 1.0f);
+    // Set background color based on toggle
+    if (m_useLightBackground) {
+        m_renderer->setClearColor(0.9f, 0.9f, 0.95f, 1.0f);  // Light blue-gray
+    } else {
+        m_renderer->setClearColor(0.03f, 0.03f, 0.06f, 1.0f);  // Dark blue
+    }
+    
     m_renderer->beginFrame();
 
     float t = (float)(glfwGetTime() - m_startTime);
     float aspect = (float)m_width / (float)m_height;
 
-    // World matrix: auto-spin + mouse rotation
-    Mat4 RyAuto = mat4_rotate_y(t * 0.3f);
-    Mat4 Ry     = mat4_rotate_y(m_yaw);
-    Mat4 Rx     = mat4_rotate_x(m_pitch);
-    Mat4 world  = mat4_mul(RyAuto, mat4_mul(Ry, Rx));
-
-    // View matrix: camera at +Z looking at origin
-    Mat4 view = mat4_lookAtRH({0, 0, m_distance}, {0, 0, 0}, {0, 1, 0});
-
-    // Projection matrix
-    Mat4 proj = mat4_perspectiveRH_NO(60.0f * 3.14159265359f / 180.0f, aspect, 0.1f, 100.0f);
-
-    // Combined MVP
-    Mat4 mvp = mat4_mul(proj, mat4_mul(view, world));
-
-    // Set uniforms
+    // Set uniforms once
     m_renderer->useShader(m_shader);
-    m_renderer->setUniformMat4(m_shader, "uMVP", mvp);
-    m_renderer->setUniformMat4(m_shader, "uWorld", world);
     m_renderer->setUniformVec3(m_shader, "uLightDir", {-0.6f, -1.0f, -0.4f});
 
-    // Draw all meshes
-    for (const auto& mesh : m_meshes) {
-        // Set texture flag
-        m_renderer->setUniformInt(m_shader, "uUseTexture", mesh.textureHandle ? 1 : 0);
+    // Render in scene mode or single object mode
+    if (m_useSceneMode && m_hasModel) {
+        // Scene mode: render 100 airplanes
+        // Grid spans roughly -67 to +67 in X/Z (10 objects * 15 spacing)
+        // Camera needs to be far enough to see all
         
-        // Draw mesh with texture (if any)
-        m_renderer->drawMesh(mesh.meshHandle, mesh.textureHandle);
+        // Position camera high and far back for good overview
+        float sceneCameraDistance = 120.0f;  // Fixed distance for scene view
+        float sceneCameraHeight = 60.0f;     // High up to look down at grid
         
-        // Track stats
+        Mat4 view = mat4_lookAtRH(
+            {0, sceneCameraHeight, sceneCameraDistance},  // Eye position
+            {0, 0, 0},                                     // Look at center
+            {0, 1, 0}                                      // Up vector
+        );
+        Mat4 proj = mat4_perspectiveRH_NO(60.0f * 3.14159265359f / 180.0f, aspect, 0.1f, 500.0f);
+        Mat4 viewProj = mat4_mul(proj, view);
+        
+        // The scene will call drawMeshInstanced which will:
+        // 1. Multiply viewProj * instance.worldMatrix to get MVP
+        // 2. Set MVP and World uniforms
+        // 3. Draw the mesh
+        // So we just set view-projection once here for reference
+        m_renderer->setUniformMat4(m_shader, "uMVP", viewProj);
+        
+        m_scene.render(m_renderer, m_modelMeshHandles, m_modelTextureHandles);
+        
+        // Track scene stats
         if (m_showStats || m_debugMode) {
-            m_stats.drawCalls++;
-            m_stats.meshesDrawn++;
+            auto sceneStats = m_scene.getRenderStats();
+            m_stats.drawCalls = sceneStats.drawCalls;
+            m_stats.meshesDrawn = sceneStats.instancesDrawn;
+        }
+    } else {
+        // Single object mode: original behavior
+        Mat4 view = mat4_lookAtRH({0, 0, m_distance}, {0, 0, 0}, {0, 1, 0});
+        Mat4 proj = mat4_perspectiveRH_NO(60.0f * 3.14159265359f / 180.0f, aspect, 0.1f, 100.0f);
+        
+        Mat4 RyAuto = mat4_rotate_y(t * 0.3f);
+        Mat4 Ry     = mat4_rotate_y(m_yaw);
+        Mat4 Rx     = mat4_rotate_x(m_pitch);
+        Mat4 world  = mat4_mul(RyAuto, mat4_mul(Ry, Rx));
+        
+        Mat4 mvp = mat4_mul(proj, mat4_mul(view, world));
+        
+        m_renderer->setUniformMat4(m_shader, "uMVP", mvp);
+        m_renderer->setUniformMat4(m_shader, "uWorld", world);
+        
+        // Draw all meshes
+        for (const auto& mesh : m_meshes) {
+            m_renderer->setUniformInt(m_shader, "uUseTexture", mesh.textureHandle ? 1 : 0);
+            m_renderer->drawMesh(mesh.meshHandle, mesh.textureHandle);
+            
+            if (m_showStats || m_debugMode) {
+                m_stats.drawCalls++;
+                m_stats.meshesDrawn++;
+            }
         }
     }
 
@@ -569,4 +617,109 @@ void CubeApp::onKey(int key, int scancode, int action, int mods) {
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
         glfwSetWindowShouldClose(m_window, 1);
     }
+    
+    // Toggle scene mode with 'S' key
+    if (key == GLFW_KEY_S && action == GLFW_PRESS) {
+        m_useSceneMode = !m_useSceneMode;
+        
+        if (m_useSceneMode) {
+            LOG_INFO("Scene mode ENABLED - showing 100 airplanes");
+            LOG_INFO("TIP: Press 'B' to toggle background (dark/light)");
+            LOG_INFO("TIP: Scroll to zoom, drag mouse to rotate view");
+            
+            if (m_hasModel) {
+                createExampleScene();
+            }
+        } else {
+            LOG_INFO("Scene mode DISABLED - showing single object");
+        }
+    }
+    
+    // Toggle background with 'B' key
+    if (key == GLFW_KEY_B && action == GLFW_PRESS) {
+        m_useLightBackground = !m_useLightBackground;
+        LOG_INFO("Background: %s", m_useLightBackground ? "LIGHT" : "DARK");
+    }
 }
+
+// Helper to create transform matrix
+Mat4 CubeApp::createTransformMatrix(float x, float y, float z, float rotY, float scale) {
+    Mat4 mat;
+    
+    // Initialize to identity
+    for (int i = 0; i < 16; i++) mat.m[i] = 0.0f;
+    mat.m[0] = mat.m[5] = mat.m[10] = mat.m[15] = 1.0f;
+    
+    // Apply scale
+    mat.m[0] = scale;
+    mat.m[5] = scale;
+    mat.m[10] = scale;
+    
+    // Apply rotation around Y axis
+    float cosY = std::cos(rotY);
+    float sinY = std::sin(rotY);
+    mat.m[0] *= cosY;
+    mat.m[2] = sinY * scale;
+    mat.m[8] = -sinY * scale;
+    mat.m[10] *= cosY;
+    
+    // Apply translation
+    mat.m[12] = x;
+    mat.m[13] = y;
+    mat.m[14] = z;
+    
+    return mat;
+}
+
+// Create example scene with 100 airplanes
+void CubeApp::createExampleScene() {
+    if (!m_hasModel) {
+        LOG_WARNING("Cannot create scene: no model loaded");
+        return;
+    }
+    
+    LOG_INFO("Creating example scene with 100 airplanes...");
+    
+    m_scene.clear();
+    
+    // Store model mesh/texture handles for scene rendering
+    m_modelMeshHandles[&m_model].clear();
+    m_modelTextureHandles[&m_model].clear();
+    
+    for (const auto& mesh : m_meshes) {
+        m_modelMeshHandles[&m_model].push_back(mesh.meshHandle);
+        m_modelTextureHandles[&m_model].push_back(mesh.textureHandle);
+    }
+    
+    // Create 10x10 grid of airplanes
+    const float spacing = 15.0f;
+    const float gridSize = 10;
+    const float offset = -(gridSize - 1) * spacing * 0.5f;
+    
+    for (int x = 0; x < gridSize; x++) {
+        for (int z = 0; z < gridSize; z++) {
+            SceneObject obj;
+            obj.model = &m_model;
+            
+            float posX = offset + x * spacing;
+            float posZ = offset + z * spacing;
+            float rotY = (x + z) * 0.2f;  // Vary rotation
+            
+            obj.transform = createTransformMatrix(posX, 0, posZ, rotY, 1.0f);
+            
+            // Color gradient across the grid
+            obj.colorTint = {
+                (float)x / (gridSize - 1),  // Red varies with X
+                (float)z / (gridSize - 1),  // Green varies with Z
+                0.8f,                        // Blue constant
+                1.0f                         // Full intensity
+            };
+            
+            obj.visible = true;
+            m_scene.addObject(obj);
+        }
+    }
+    
+    LOG_INFO("Scene created: %zu objects", m_scene.getObjectCount());
+}
+

@@ -6,9 +6,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
-
 #include "stb_image.h"
-#include "dds_loader.h"
 
 // ==================== OpenGL Texture ====================
 struct GLTexture {
@@ -42,6 +40,11 @@ private:
     uint32_t m_nextShaderHandle;
     uint32_t m_nextTextureHandle;
     uint32_t m_currentShader;
+    
+    // Store view-projection for instanced rendering
+    Mat4 m_viewProj;
+    bool m_hasViewProj;
+    bool m_inInstancedDraw;  // Flag to prevent overwriting viewProj during instanced draw
 
     GLuint compileShader(GLenum type, const char* src) {
         GLuint sh = glCreateShader(type);
@@ -89,6 +92,8 @@ public:
         , m_nextShaderHandle(1)
         , m_nextTextureHandle(1)
         , m_currentShader(0)
+        , m_hasViewProj(false)
+        , m_inInstancedDraw(false)
     {}
 
     virtual ~OpenGLRenderer() {
@@ -254,6 +259,13 @@ public:
 
             if (loc >= 0) {
                 glUniformMatrix4fv(loc, 1, GL_FALSE, matrix.m);
+                
+                // Store view-projection for instanced rendering
+                // Only store when setting the initial view-proj, not during instanced drawing
+                if (std::string(name) == "uMVP" && !m_inInstancedDraw) {
+                    m_viewProj = matrix;
+                    m_hasViewProj = true;
+                }
             }
         }
     }
@@ -280,32 +292,18 @@ public:
     }
 
     uint32_t createTexture(const char* filepath) override {
+        // Load image using stb_image
         int width, height, channels;
-        unsigned char* data = nullptr;
-        
-        // Check if it's a DDS file
-        const char* ext = strrchr(filepath, '.');
-        if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0)) {
-            // Try DDS loader first
-            data = DDSLoader::Load(filepath, &width, &height, &channels);
-            if (data) {
-                std::printf("Loaded DDS texture: %s (%dx%d, %d channels)\n", filepath, width, height, channels);
-            }
-        }
-        
-        // Fall back to stb_image for other formats
-        if (!data) {
-            stbi_set_flip_vertically_on_load(true); // OpenGL expects bottom-left origin
-            data = stbi_load(filepath, &width, &height, &channels, 0);
-            if (data) {
-                std::printf("Loaded texture: %s (%dx%d, %d channels)\n", filepath, width, height, channels);
-            }
-        }
+        stbi_set_flip_vertically_on_load(true); // OpenGL expects bottom-left origin
+        unsigned char* data = stbi_load(filepath, &width, &height, &channels, 0);
         
         if (!data) {
             std::fprintf(stderr, "Failed to load texture: %s\n", filepath);
+            std::fprintf(stderr, "STB Error: %s\n", stbi_failure_reason());
             return 0;
         }
+
+        std::printf("Loaded texture: %s (%dx%d, %d channels)\n", filepath, width, height, channels);
 
         // Create OpenGL texture
         GLTexture texture;
@@ -336,11 +334,7 @@ public:
         glBindTexture(GL_TEXTURE_2D, 0);
         
         // Free image data
-        if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0)) {
-            delete[] data;  // DDS loader uses new[]
-        } else {
-            stbi_image_free(data);  // stb_image uses malloc
-        }
+        stbi_image_free(data);
         
         // Store and return handle
         uint32_t handle = m_nextTextureHandle++;
@@ -395,6 +389,57 @@ public:
             glDrawElements(GL_TRIANGLES, it->second.indexCount, GL_UNSIGNED_SHORT, (void*)0);
             glBindVertexArray(0);
         }
+    }
+    
+    // Instanced drawing
+    void drawMeshInstanced(uint32_t meshHandle, uint32_t textureHandle,
+                          const InstanceData* instances, uint32_t instanceCount) override {
+        if (instanceCount == 0 || !instances) return;
+        if (!m_hasViewProj) return;  // Need view-projection set first
+        
+        static int debugCount = 0;
+        if (debugCount < 3) {
+            printf("GL drawMeshInstanced: mesh=%u, tex=%u, count=%u\n", 
+                   meshHandle, textureHandle, instanceCount);
+            printf("  ViewProj[0]=%f, Instance.world[0]=%f\n", 
+                   m_viewProj.m[0], instances[0].worldMatrix.m[0]);
+            debugCount++;
+        }
+        
+        // Set flag to prevent viewProj from being overwritten in setUniformMat4 calls
+        m_inInstancedDraw = true;
+        
+        // Fallback implementation: draw one at a time
+        // Using stored view-projection from setUniformMat4
+        
+        for (uint32_t i = 0; i < instanceCount; i++) {
+            // Compute MVP = ViewProj * WorldMatrix
+            Mat4 world = instances[i].worldMatrix;
+            Mat4 mvp = matrixMultiply(m_viewProj, world);
+            
+            setUniformMat4(m_currentShader, "uMVP", mvp);
+            setUniformMat4(m_currentShader, "uWorld", world);
+            setUniformInt(m_currentShader, "uUseTexture", textureHandle ? 1 : 0);
+            
+            drawMesh(meshHandle, textureHandle);
+        }
+        
+        m_inInstancedDraw = false;
+    }
+    
+private:
+    // Matrix multiplication helper
+    Mat4 matrixMultiply(const Mat4& a, const Mat4& b) {
+        Mat4 result{};
+        for (int row = 0; row < 4; row++) {
+            for (int col = 0; col < 4; col++) {
+                result.m[col * 4 + row] = 0;
+                for (int k = 0; k < 4; k++) {
+                    result.m[col * 4 + row] += a.m[k * 4 + row] * b.m[col * 4 + k];
+                }
+            }
+        }
+        return result;
     }
 
     void setDepthTest(bool enable) override {

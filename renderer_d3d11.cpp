@@ -23,7 +23,6 @@
 #include <cstring>
 
 #include "stb_image.h"
-#include "dds_loader.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -54,6 +53,16 @@ struct CBData {
     XMFLOAT3 lightDir;                // 12 bytes
     float    useTexture;              //  4 bytes  (1.0 = textured, 0.0 = vertex colour)
 };
+
+// Helper to convert Mat4 to XMMATRIX
+static XMMATRIX Mat4ToXM(const Mat4& m) {
+    return XMMATRIX(
+        m.m[0], m.m[1], m.m[2], m.m[3],
+        m.m[4], m.m[5], m.m[6], m.m[7],
+        m.m[8], m.m[9], m.m[10], m.m[11],
+        m.m[12], m.m[13], m.m[14], m.m[15]
+    );
+}
 
 // ==================== D3D11 Shader ====================
 struct D3D11Shader {
@@ -582,30 +591,15 @@ public:
 
     uint32_t createTexture(const char* filepath) override {
         int width, height, channels;
-        unsigned char* data = nullptr;
-        
-        // Check if it's a DDS file
-        const char* ext = strrchr(filepath, '.');
-        if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0)) {
-            data = DDSLoader::Load(filepath, &width, &height, &channels);
-            if (data) {
-                std::printf("Loaded DDS texture: %s (%dx%d)\n", filepath, width, height);
-            }
-        }
-        
-        // Fall back to stb_image
-        if (!data) {
-            stbi_set_flip_vertically_on_load(false);
-            data = stbi_load(filepath, &width, &height, &channels, 4);
-            if (data) {
-                std::printf("Loaded texture: %s (%dx%d)\n", filepath, width, height);
-            }
-        }
+        stbi_set_flip_vertically_on_load(false);
+        unsigned char* data = stbi_load(filepath, &width, &height, &channels, 4);
         
         if (!data) {
-            std::fprintf(stderr, "Failed to load texture: %s\n", filepath);
+            std::fprintf(stderr, "Failed to load texture: %s - %s\n", filepath, stbi_failure_reason());
             return 0;
         }
+
+        std::printf("Loaded texture: %s (%dx%d)\n", filepath, width, height);
 
         D3D11Texture texture;
         texture.width = width;
@@ -624,10 +618,7 @@ public:
 
         HRESULT hr = m_device->CreateTexture2D(&texDesc, nullptr, &texture.texture);
         if (FAILED(hr)) {
-            if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0))
-                delete[] data;
-            else
-                stbi_image_free(data);
+            stbi_image_free(data);
             return 0;
         }
 
@@ -640,19 +631,12 @@ public:
 
         hr = m_device->CreateShaderResourceView(texture.texture.Get(), &srvDesc, &texture.srv);
         if (FAILED(hr)) {
-            if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0))
-                delete[] data;
-            else
-                stbi_image_free(data);
+            stbi_image_free(data);
             return 0;
         }
 
         m_context->GenerateMips(texture.srv.Get());
-        
-        if (ext && (strcmp(ext, ".dds") == 0 || strcmp(ext, ".DDS") == 0))
-            delete[] data;
-        else
-            stbi_image_free(data);
+        stbi_image_free(data);
 
         uint32_t handle = m_nextTextureHandle++;
         m_textures[handle] = texture;
@@ -714,6 +698,29 @@ public:
         m_context->IASetIndexBuffer(mesh.indexBuffer.Get(), DXGI_FORMAT_R16_UINT, 0);
         m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         m_context->DrawIndexed(mesh.indexCount, 0, 0);
+    }
+    
+    // Instanced drawing
+    void drawMeshInstanced(uint32_t meshHandle, uint32_t textureHandle,
+                          const InstanceData* instances, uint32_t instanceCount) override {
+        if (instanceCount == 0 || !instances) return;
+        
+        auto shaderIt = m_shaders.find(m_currentShader);
+        if (shaderIt == m_shaders.end()) return;
+        
+        // Save current MVP (which should be view-projection)
+        XMMATRIX viewProj = shaderIt->second.cbData.mvp;
+        
+        // Fallback implementation: draw one at a time
+        for (uint32_t i = 0; i < instanceCount; i++) {
+            XMMATRIX world = Mat4ToXM(instances[i].worldMatrix);
+            XMMATRIX mvp = XMMatrixMultiply(world, viewProj);  // Note: world * VP order
+            
+            shaderIt->second.cbData.world = world;
+            shaderIt->second.cbData.mvp = mvp;
+            
+            drawMesh(meshHandle, textureHandle);
+        }
     }
 
     void setDepthTest(bool enable) override {

@@ -6,6 +6,7 @@
 #include "model.h"
 #include "debug.h"
 #include "texture_cache.h"
+#include "scene.h"
 #include <vector>
 
 // Forward declarations
@@ -42,6 +43,8 @@ private:
     void render();
     bool createDefaultCube();
     bool loadModel(const char* path);
+    void createExampleScene();  // Create 100 airplanes
+    Mat4 createTransformMatrix(float x, float y, float z, float rotY, float scale);
 
     // Window
     GLFWwindow* m_window;
@@ -63,6 +66,13 @@ private:
     // Loaded model (if any)
     Model m_model;
     bool m_hasModel;
+    
+    // Scene system for multiple objects
+    Scene m_scene;
+    bool m_useSceneMode;  // Toggle between single object and scene mode
+    bool m_useLightBackground;  // Toggle between dark and light background
+    std::unordered_map<const Model*, std::vector<uint32_t>> m_modelMeshHandles;
+    std::unordered_map<const Model*, std::vector<uint32_t>> m_modelTextureHandles;
 
     // Camera/input state
     bool m_dragging;

@@ -20,6 +20,12 @@ struct Mat4 {
     float m[16]; // column-major
 };
 
+// ==================== Instance Data ====================
+struct InstanceData {
+    Mat4 worldMatrix;    // Per-instance world transform
+    Vec4 colorTint;      // Per-instance color tint (r, g, b, intensity)
+};
+
 // ==================== Vertex Format ====================
 struct Vertex {
     float px, py, pz;    // position
@@ -66,6 +72,8 @@ public:
     
     // Drawing
     virtual void drawMesh(uint32_t meshHandle, uint32_t textureHandle = 0) = 0;
+    virtual void drawMeshInstanced(uint32_t meshHandle, uint32_t textureHandle,
+                                   const InstanceData* instances, uint32_t instanceCount) = 0;
     
     // State
     virtual void setDepthTest(bool enable) = 0;
