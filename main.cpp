@@ -1,6 +1,7 @@
 // main.cpp - Entry point
 #include "app.h"
 #include "debug.h"
+#include "scene_loader.h"
 #include <cstdio>
 #include <cstring>
 
@@ -10,6 +11,8 @@ void printUsage(const char* programName) {
     printf("  opengl, gl     Use OpenGL 3.3\n");
     printf("  d3d11, dx11    Use Direct3D 11\n");
     printf("  d3d12, dx12    Use Direct3D 12\n");
+    printf("\nScene Options:\n");
+    printf("  --scene FILE   Load scene from JSON file\n");
     printf("\nDebug Options:\n");
     printf("  --debug        Enable debug output\n");
     printf("  --verbose      Enable verbose logging (implies --debug)\n");
@@ -18,6 +21,7 @@ void printUsage(const char* programName) {
     printf("  --validate     Enable strict validation checks\n");
     printf("\nExamples:\n");
     printf("  %s opengl airplane.x\n", programName);
+    printf("  %s --scene example_scene.json d3d12\n", programName);
     printf("  %s --debug d3d12 model.x\n", programName);
     printf("  %s --verbose --stats opengl\n", programName);
     printf("\n");
@@ -27,6 +31,7 @@ int main(int argc, char** argv) {
     // Parse command line arguments
     RendererAPI api = RendererAPI::OpenGL;
     const char* modelPath = nullptr;
+    const char* sceneFile = nullptr;
     bool debugMode = false;
     bool verboseMode = false;
     bool traceMode = false;
@@ -37,6 +42,8 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             showHelp = true;
+        } else if (strcmp(argv[i], "--scene") == 0 && i + 1 < argc) {
+            sceneFile = argv[++i];
         } else if (strcmp(argv[i], "--debug") == 0) {
             debugMode = true;
         } else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
@@ -114,6 +121,38 @@ int main(int argc, char** argv) {
         LOG_INFO("Strict validation enabled");
     }
     
+    // Load scene file if specified
+    SceneFile scene;
+    bool hasScene = false;
+    if (sceneFile) {
+        LOG_INFO("Loading scene: %s", sceneFile);
+        
+        // Validate scene file exists
+        if (strictValidation || debugMode) {
+            if (!FileValidator::validateTexturePath(sceneFile)) {  // Reuse texture validator for JSON
+                LOG_ERROR("Scene file validation failed, aborting");
+                DebugManager::shutdown();
+                return 1;
+            }
+        }
+        
+        if (SceneLoader::loadScene(sceneFile, scene)) {
+            LOG_INFO("Scene loaded: %zu objects, %zu lights", scene.objects.size(), scene.lights.size());
+            hasScene = true;
+            
+            // If scene specifies a model path for any object and no model was specified on command line,
+            // use the first object's model
+            if (!modelPath && !scene.objects.empty() && !scene.objects[0].modelPath.empty()) {
+                modelPath = scene.objects[0].modelPath.c_str();
+                LOG_INFO("Using model from scene: %s", modelPath);
+            }
+        } else {
+            LOG_ERROR("Failed to load scene: %s", SceneLoader::getLastError());
+            DebugManager::shutdown();
+            return 1;
+        }
+    }
+    
     // Create and run application
     CubeApp app;
     app.setDebugMode(debugMode);
@@ -125,6 +164,14 @@ int main(int argc, char** argv) {
         LOG_ERROR("Failed to initialize application");
         DebugManager::shutdown();
         return 1;
+    }
+    
+    // Apply scene settings if a scene was loaded
+    if (hasScene) {
+        LOG_DEBUG("Applying scene settings...");
+        if (!app.loadScene(scene)) {
+            LOG_WARNING("Failed to apply scene settings");
+        }
     }
     
     LOG_INFO("Application initialized successfully");

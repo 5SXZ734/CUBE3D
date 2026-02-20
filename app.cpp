@@ -983,3 +983,97 @@ void CubeApp::updateFPSCamera(float deltaTime) {
     }
 }
 
+// ==================== Scene Loading ====================
+bool CubeApp::loadScene(const SceneFile& scene) {
+    LOG_INFO("Applying scene: %s", scene.name.c_str());
+    
+    // Apply camera position (FPS camera system)
+    m_cameraPos.x = scene.camera.position[0];
+    m_cameraPos.y = scene.camera.position[1];
+    m_cameraPos.z = scene.camera.position[2];
+    
+    // Calculate camera orientation from position and target
+    Vec3 target = {scene.camera.target[0], scene.camera.target[1], scene.camera.target[2]};
+    Vec3 direction = {
+        target.x - m_cameraPos.x,
+        target.y - m_cameraPos.y,
+        target.z - m_cameraPos.z
+    };
+    
+    // Calculate yaw and pitch from direction
+    float length = std::sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
+    if (length > 0.001f) {
+        direction.x /= length;
+        direction.y /= length;
+        direction.z /= length;
+        
+        m_cameraYaw = std::atan2(direction.x, direction.z) * 180.0f / 3.14159f;
+        m_cameraPitch = std::asin(direction.y) * 180.0f / 3.14159f;
+        
+        // Update camera vectors
+        m_cameraForward = direction;
+        m_cameraRight.x = std::sin((m_cameraYaw + 90.0f) * 3.14159f / 180.0f);
+        m_cameraRight.y = 0;
+        m_cameraRight.z = std::cos((m_cameraYaw + 90.0f) * 3.14159f / 180.0f);
+        m_cameraUp.x = 0;
+        m_cameraUp.y = 1;
+        m_cameraUp.z = 0;
+    }
+    
+    // Note: FOV is handled in projection matrix, not stored as member variable
+    
+    LOG_DEBUG("Camera: pos(%.1f, %.1f, %.1f) looking at(%.1f, %.1f, %.1f)",
+             m_cameraPos.x, m_cameraPos.y, m_cameraPos.z,
+             target.x, target.y, target.z);
+    
+    // Apply first light if available
+    if (!scene.lights.empty()) {
+        const auto& light = scene.lights[0];
+        Vec3 lightDir = {light.direction[0], light.direction[1], light.direction[2]};
+        m_renderer->setUniformVec3(m_shader, "uLightDir", lightDir);
+        LOG_DEBUG("Light: dir(%.2f, %.2f, %.2f)", lightDir.x, lightDir.y, lightDir.z);
+    }
+    
+    // Apply ground settings
+    m_showGround = scene.ground.enabled;
+    LOG_DEBUG("Ground: %s", m_showGround ? "enabled" : "disabled");
+    
+    // Apply background settings
+    m_useLightBackground = scene.background.enabled;
+    LOG_DEBUG("Background: %s", m_useLightBackground ? "light" : "dark");
+    
+    // Load objects
+    // Note: For now, we only load the first object's model
+    // Multi-object scenes would require extending the app to support multiple models
+    if (!scene.objects.empty()) {
+        for (size_t i = 0; i < scene.objects.size(); i++) {
+            const auto& obj = scene.objects[i];
+            if (!obj.visible) {
+                LOG_DEBUG("Object %zu (%s): skipped (not visible)", i, obj.name.c_str());
+                continue;
+            }
+            
+            LOG_DEBUG("Object %zu (%s): model=%s pos(%.1f,%.1f,%.1f) rot(%.1f,%.1f,%.1f) scale(%.1f,%.1f,%.1f)",
+                     i, obj.name.c_str(), obj.modelPath.c_str(),
+                     obj.position[0], obj.position[1], obj.position[2],
+                     obj.rotation[0], obj.rotation[1], obj.rotation[2],
+                     obj.scale[0], obj.scale[1], obj.scale[2]);
+            
+            // For first object, load the model if not already loaded
+            if (i == 0 && !m_hasModel && !obj.modelPath.empty()) {
+                if (loadModel(obj.modelPath.c_str())) {
+                    LOG_INFO("Loaded model from scene: %s", obj.modelPath.c_str());
+                    
+                    // TODO: Apply transform (position, rotation, scale) to the model
+                    // This would require storing per-object transforms in the app
+                } else {
+                    LOG_WARNING("Failed to load model: %s", obj.modelPath.c_str());
+                }
+            }
+        }
+    }
+    
+    LOG_INFO("Scene applied successfully");
+    return true;
+}
+

@@ -7,6 +7,7 @@
 #include "debug.h"
 #include "texture_cache.h"
 #include "scene.h"
+#include "scene_loader.h"
 #include <vector>
 
 // Forward declarations
@@ -37,6 +38,9 @@ public:
     void setStrictValidation(bool enabled) { m_strictValidation = enabled; }
     void setShowStats(bool enabled) { m_showStats = enabled; }
     void printStats() const;
+    
+    // Scene loading
+    bool loadScene(const SceneFile& scene);
 
 private:
     void update(float deltaTime);

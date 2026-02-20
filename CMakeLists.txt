@@ -18,6 +18,8 @@ set(SOURCES
   model.h
   normal_map_gen.h
   scene.h
+  scene_loader.cpp
+  scene_loader.h
   stb_image_impl.cpp
   texture_cache.h
 )
@@ -34,6 +36,7 @@ target_include_directories(cube_viewer PRIVATE
 )
 
 # -------------------- vcpkg dependencies --------------------
+find_package(nlohmann_json CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(assimp CONFIG REQUIRED)
@@ -42,6 +45,7 @@ target_link_libraries(cube_viewer PRIVATE
   glad::glad
   glfw
   assimp::assimp
+  nlohmann_json::nlohmann_json
 )
 
 # stb is header-only; vcpkg may not provide a CMake package config for it.
