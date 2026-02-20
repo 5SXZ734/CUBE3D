@@ -66,6 +66,9 @@ out vec4 FragColor;
 
 void main()
 {
+    // DEBUG: Uncomment to visualize UV coordinates
+    // FragColor = vec4(vTexCoord.x, vTexCoord.y, 0.0, 1.0); return;
+    
     // Get normal (either from normal map or vertex normal)
     vec3 N = vNrmW;
     if (uUseNormalMap > 0) {
@@ -387,7 +390,8 @@ public:
     uint32_t createTexture(const char* filepath) override {
         // Load image using stb_image
         int width, height, channels;
-        stbi_set_flip_vertically_on_load(true); // OpenGL expects bottom-left origin
+        // DON'T flip - 3DS models expect textures in their native orientation
+        stbi_set_flip_vertically_on_load(false);
         unsigned char* data = stbi_load(filepath, &width, &height, &channels, 0);
         
         if (!data) {

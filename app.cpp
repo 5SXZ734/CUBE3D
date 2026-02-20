@@ -574,8 +574,16 @@ void CubeApp::render() {
         m_renderer->setUniformMat4(m_shader, "uWorld", world);
         
         // Draw all meshes
-        for (const auto& mesh : m_meshes) {
+        for (size_t i = 0; i < m_meshes.size(); i++) {
+            const auto& mesh = m_meshes[i];
             m_renderer->setUniformInt(m_shader, "uUseTexture", mesh.textureHandle ? 1 : 0);
+            
+            // DEBUG: Print mesh/texture info once
+            static bool debugOnce = false;
+            if (!debugOnce && m_debugMode) {
+                std::printf("Mesh %zu: meshHandle=%u, textureHandle=%u\n", 
+                           i, mesh.meshHandle, mesh.textureHandle);
+            }
             
             m_renderer->drawMesh(mesh.meshHandle, mesh.textureHandle);
             
@@ -583,6 +591,10 @@ void CubeApp::render() {
                 m_stats.drawCalls++;
                 m_stats.meshesDrawn++;
             }
+        }
+        static bool debugOnce = false;
+        if (!debugOnce && m_debugMode) {
+            debugOnce = true;
         }
     }
 
