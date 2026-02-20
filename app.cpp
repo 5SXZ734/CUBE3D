@@ -101,6 +101,7 @@ CubeApp::CubeApp()
     , m_strictValidation(false)
     , m_showStats(false)
     , m_groundMesh(0)
+    , m_runwayMesh(0)
     , m_groundTexture(0)
     , m_runwayTexture(0)
     , m_showGround(true)
@@ -543,6 +544,12 @@ void CubeApp::render() {
             m_renderer->setUniformMat4(m_shader, "uWorld", groundWorld);
             m_renderer->setUniformInt(m_shader, "uUseTexture", m_groundTexture ? 1 : 0);
             m_renderer->drawMesh(m_groundMesh, m_groundTexture);
+            
+            // Draw runway separately with its own texture
+            if (m_runwayMesh) {
+                m_renderer->setUniformInt(m_shader, "uUseTexture", m_runwayTexture ? 1 : 0);
+                m_renderer->drawMesh(m_runwayMesh, m_runwayTexture);
+            }
         }
         
         // If using scene system (100 planes), render from m_scene
@@ -603,6 +610,12 @@ void CubeApp::render() {
             m_renderer->setUniformMat4(m_shader, "uWorld", groundWorld);
             m_renderer->setUniformInt(m_shader, "uUseTexture", m_groundTexture ? 1 : 0);
             m_renderer->drawMesh(m_groundMesh, m_groundTexture);
+            
+            // Draw runway separately with its own texture
+            if (m_runwayMesh) {
+                m_renderer->setUniformInt(m_shader, "uUseTexture", m_runwayTexture ? 1 : 0);
+                m_renderer->drawMesh(m_runwayMesh, m_runwayTexture);
+            }
         }
         
         // Apply auto-rotation if enabled
@@ -849,11 +862,6 @@ Mat4 CubeApp::createTransformMatrix(float x, float y, float z, float rotY, float
 void CubeApp::createGroundPlane(const SceneFileGround& groundConfig) {
     LOG_INFO("Creating ground plane%s...", groundConfig.hasRunway ? " with runway" : "");
     
-    std::vector<Vertex> vertices;
-    std::vector<uint16_t> indices;
-    
-    const float groundY = 0.0f;  // Ground at Y=0
-    
     // ==================== LOAD TEXTURES ====================
     
     m_groundTexture = 0;
@@ -877,7 +885,11 @@ void CubeApp::createGroundPlane(const SceneFileGround& groundConfig) {
     
     // ==================== GROUND SURFACE ====================
     
-    float surfSize = groundConfig.size;  // Use size from scene file
+    std::vector<Vertex> groundVertices;
+    std::vector<uint16_t> groundIndices;
+    
+    const float groundY = 0.0f;  // Ground at Y=0
+    float surfSize = groundConfig.size;
     
     Vertex sv0, sv1, sv2, sv3;
     
@@ -918,27 +930,36 @@ void CubeApp::createGroundPlane(const SceneFileGround& groundConfig) {
     sv0.bz = sv1.bz = sv2.bz = sv3.bz = 1.0f;
     
     // Add ground quad
-    uint16_t baseIdx = 0;
-    vertices.push_back(sv0);
-    vertices.push_back(sv1);
-    vertices.push_back(sv2);
-    vertices.push_back(sv3);
+    groundVertices.push_back(sv0);
+    groundVertices.push_back(sv1);
+    groundVertices.push_back(sv2);
+    groundVertices.push_back(sv3);
     
     // Ground indices (2 triangles)
-    indices.push_back(baseIdx + 0);
-    indices.push_back(baseIdx + 1);
-    indices.push_back(baseIdx + 2);
+    groundIndices.push_back(0);
+    groundIndices.push_back(1);
+    groundIndices.push_back(2);
+    groundIndices.push_back(0);
+    groundIndices.push_back(2);
+    groundIndices.push_back(3);
     
-    indices.push_back(baseIdx + 0);
-    indices.push_back(baseIdx + 2);
-    indices.push_back(baseIdx + 3);
+    // Create ground mesh
+    m_groundMesh = m_renderer->createMesh(
+        groundVertices.data(), (uint32_t)groundVertices.size(),
+        groundIndices.data(), (uint32_t)groundIndices.size()
+    );
     
-    // ==================== RUNWAY STRIP (Optional) ====================
+    // ==================== RUNWAY STRIP (Optional, SEPARATE MESH) ====================
+    
+    m_runwayMesh = 0;  // Initialize to 0
     
     if (groundConfig.hasRunway) {
+        std::vector<Vertex> runwayVertices;
+        std::vector<uint16_t> runwayIndices;
+        
         float stripWidth = groundConfig.runwayWidth / 2.0f;    // Half-width (±)
         float stripLength = groundConfig.runwayLength / 2.0f;  // Half-length (±)
-        float stripY = 0.1f;  // Slightly above ground (z-fighting prevention)
+        float stripY = 0.2f;  // Higher above ground to prevent z-fighting
         
         Vertex rs0, rs1, rs2, rs3;
         
@@ -963,12 +984,13 @@ void CubeApp::createGroundPlane(const SceneFileGround& groundConfig) {
         rs0.b = rs1.b = rs2.b = rs3.b = rb;
         rs0.a = rs1.a = rs2.a = rs3.a = ra;
         
-        // Texture coordinates (repeats every 100m)
-        float runwayRepeat = groundConfig.runwayLength / 100.0f;
-        rs0.u = 0.0f;           rs0.v = 0.0f;
-        rs1.u = 0.0f;           rs1.v = runwayRepeat;
-        rs2.u = runwayRepeat;   rs2.v = runwayRepeat;
-        rs3.u = runwayRepeat;   rs3.v = 0.0f;
+        // Texture coordinates - tiled along runway length
+        float runwayTexU = 1.0f;  // Width: 1 repetition
+        float runwayTexV = groundConfig.runwayLength / 100.0f;  // Length: repeat every 100m
+        rs0.u = 0.0f;        rs0.v = 0.0f;
+        rs1.u = 0.0f;        rs1.v = runwayTexV;
+        rs2.u = runwayTexU;  rs2.v = runwayTexV;
+        rs3.u = runwayTexU;  rs3.v = 0.0f;
         
         // Tangents and bitangents
         rs0.tx = rs1.tx = rs2.tx = rs3.tx = 1.0f;
@@ -979,34 +1001,31 @@ void CubeApp::createGroundPlane(const SceneFileGround& groundConfig) {
         rs0.bz = rs1.bz = rs2.bz = rs3.bz = 1.0f;
         
         // Add runway quad
-        baseIdx = (uint16_t)vertices.size();
-        vertices.push_back(rs0);
-        vertices.push_back(rs1);
-        vertices.push_back(rs2);
-        vertices.push_back(rs3);
+        runwayVertices.push_back(rs0);
+        runwayVertices.push_back(rs1);
+        runwayVertices.push_back(rs2);
+        runwayVertices.push_back(rs3);
         
-        // Runway indices (2 triangles)
-        indices.push_back(baseIdx + 0);
-        indices.push_back(baseIdx + 1);
-        indices.push_back(baseIdx + 2);
+        // Runway indices
+        runwayIndices.push_back(0);
+        runwayIndices.push_back(1);
+        runwayIndices.push_back(2);
+        runwayIndices.push_back(0);
+        runwayIndices.push_back(2);
+        runwayIndices.push_back(3);
         
-        indices.push_back(baseIdx + 0);
-        indices.push_back(baseIdx + 2);
-        indices.push_back(baseIdx + 3);
+        // Create separate runway mesh
+        m_runwayMesh = m_renderer->createMesh(
+            runwayVertices.data(), (uint32_t)runwayVertices.size(),
+            runwayIndices.data(), (uint32_t)runwayIndices.size()
+        );
         
         LOG_INFO("  Runway: %.0fm × %.0fm", groundConfig.runwayWidth, groundConfig.runwayLength);
     }
     
-    // ==================== CREATE MESH ====================
-    
-    m_groundMesh = m_renderer->createMesh(
-        vertices.data(), (uint32_t)vertices.size(),
-        indices.data(), (uint32_t)indices.size()
-    );
-    
-    LOG_INFO("Ground created: %.0fm×%.0fm terrain (%zu verts, %zu tris)", 
-             surfSize * 2.0f, surfSize * 2.0f, vertices.size(), indices.size() / 3);
-    LOG_INFO("  Ground texture: %u, Runway texture: %u", m_groundTexture, m_runwayTexture);
+    LOG_INFO("Ground created: %.0fm×%.0fm terrain", surfSize * 2.0f, surfSize * 2.0f);
+    LOG_INFO("  Ground mesh: %u (texture: %u)", m_groundMesh, m_groundTexture);
+    LOG_INFO("  Runway mesh: %u (texture: %u)", m_runwayMesh, m_runwayTexture);
 }
 
 // Update FPS camera for scene mode

@@ -95,6 +95,7 @@ private:
     
     // Ground plane
     uint32_t m_groundMesh;
+    uint32_t m_runwayMesh;         // Separate mesh for runway
     uint32_t m_groundTexture;      // Texture for ground surface
     uint32_t m_runwayTexture;      // Texture for runway surface
     bool m_showGround;
