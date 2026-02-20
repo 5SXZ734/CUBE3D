@@ -201,6 +201,10 @@ VSOut VSMain(VSIn v)
     float3 B = normalize(mul(float4(v.aBitangent, 0.0), uWorld).xyz);
     float3 N = normalize(mul(float4(v.aNrm, 0.0), uWorld).xyz);
     
+    // Re-orthogonalize using Gram-Schmidt
+    T = normalize(T - dot(T, N) * N);
+    B = normalize(cross(N, T));
+    
     // Build TBN matrix
     o.TBN = float3x3(T, B, N);
     o.nrmW = N;
@@ -219,7 +223,7 @@ float4 PSMain(VSOut i) : SV_Target
         float3 normalMapSample = gNormalMap.Sample(gSampler, i.texCoord).rgb;
         float3 tangentNormal = normalize(normalMapSample * 2.0 - 1.0);
         
-        // Transform to world space
+        // Transform to world space with orthogonalized TBN
         N = normalize(mul(tangentNormal, i.TBN));
     }
     
@@ -229,8 +233,8 @@ float4 PSMain(VSOut i) : SV_Target
     // Calculate lighting
     float3 L = normalize(-uLightDir);
     float ndl = max(dot(N, L), 0.0);
-    float ambient = 0.18;
-    float diff = ambient + ndl * 0.82;
+    float ambient = 0.40;  // High ambient for bright scene
+    float diff = ambient + ndl * 0.60;  // Balanced
     
     // Choose base color: texture or vertex color
     float4 baseColor = i.col;

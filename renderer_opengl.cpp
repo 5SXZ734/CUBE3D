@@ -8,6 +8,91 @@
 #include <unordered_map>
 #include "stb_image.h"
 
+// ==================== OpenGL Default Shaders ====================
+const char* OPENGL_VERTEX_SHADER = R"(
+#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNrm;
+layout(location=2) in vec4 aCol;
+layout(location=3) in vec2 aTexCoord;
+layout(location=4) in vec3 aTangent;
+layout(location=5) in vec3 aBitangent;
+
+uniform mat4 uMVP;
+uniform mat4 uWorld;
+
+out vec3 vNrmW;
+out vec4 vCol;
+out vec2 vTexCoord;
+out mat3 vTBN;  // Tangent-Bitangent-Normal matrix for normal mapping
+
+void main()
+{
+    gl_Position = uMVP * vec4(aPos, 1.0);
+    
+    // Transform normal, tangent, bitangent to world space
+    vec3 T = normalize(vec3(uWorld * vec4(aTangent, 0.0)));
+    vec3 B = normalize(vec3(uWorld * vec4(aBitangent, 0.0)));
+    vec3 N = normalize(vec3(uWorld * vec4(aNrm, 0.0)));
+    
+    // Re-orthogonalize TBN using Gram-Schmidt process
+    // This ensures T, B, N are perpendicular even if input data is slightly off
+    T = normalize(T - dot(T, N) * N);  // Make T perpendicular to N
+    B = normalize(cross(N, T));         // Make B perpendicular to both
+    
+    // Construct TBN matrix (transforms from tangent space to world space)
+    vTBN = mat3(T, B, N);
+    
+    vNrmW = N;  // Keep original normal for non-normal-mapped surfaces
+    vCol = aCol;
+    vTexCoord = aTexCoord;
+}
+)";
+
+const char* OPENGL_FRAGMENT_SHADER = R"(
+#version 330 core
+in vec3 vNrmW;
+in vec4 vCol;
+in vec2 vTexCoord;
+in mat3 vTBN;
+
+uniform vec3 uLightDir;
+uniform int uUseTexture;
+uniform int uUseNormalMap;  // Flag for normal mapping
+uniform sampler2D uTexture;
+uniform sampler2D uNormalMap;  // Normal map texture
+
+out vec4 FragColor;
+
+void main()
+{
+    // Get normal (either from normal map or vertex normal)
+    vec3 N = vNrmW;
+    if (uUseNormalMap > 0) {
+        // Sample normal map and convert from [0,1] to [-1,1]
+        vec3 normalMapSample = texture(uNormalMap, vTexCoord).rgb;
+        vec3 tangentNormal = normalize(normalMapSample * 2.0 - 1.0);
+        
+        // Transform from tangent space to world space using orthogonalized TBN
+        N = normalize(vTBN * tangentNormal);
+    }
+    
+    // Lighting calculation
+    vec3 L = normalize(-uLightDir);
+    float ndl = max(dot(N, L), 0.0);
+    float ambient = 0.40;  // High ambient for bright, vivid scene
+    float diff = ambient + ndl * 0.60;  // Balanced
+    
+    // Base color (texture or vertex color)
+    vec4 baseColor = vCol;
+    if (uUseTexture > 0) {
+        baseColor = texture(uTexture, vTexCoord);
+    }
+    
+    FragColor = vec4(baseColor.rgb * diff, baseColor.a);
+}
+)";
+
 // ==================== OpenGL Texture ====================
 struct GLTexture {
     GLuint id;

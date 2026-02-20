@@ -94,4 +94,8 @@ enum class RendererAPI {
 
 IRenderer* createRenderer(RendererAPI api);
 
+// Default shader sources (defined in renderer_opengl.cpp)
+extern const char* OPENGL_VERTEX_SHADER;
+extern const char* OPENGL_FRAGMENT_SHADER;
+
 #endif // RENDERER_H
