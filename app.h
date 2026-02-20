@@ -51,7 +51,7 @@ private:
     void update(float deltaTime);
     void render();
     bool loadModel(const char* path);
-    void createGroundPlane();   // Create ground grid
+    void createGroundPlane(const SceneFileGround& groundConfig);   // Create ground with optional runway
     void updateFPSCamera(float deltaTime);  // Update FPS camera for scene mode
     void updateChaseCamera(float deltaTime); // Update chase camera for flight mode
     Mat4 createTransformMatrix(float x, float y, float z, float rotY, float scale);

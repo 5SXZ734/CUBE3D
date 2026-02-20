@@ -219,8 +219,16 @@ bool CubeApp::initialize(RendererAPI api, const char* modelPath) {
     m_startTime = glfwGetTime();
     m_lastFrameTime = m_startTime;
     
-    // Create ground plane for scene mode
-    createGroundPlane();
+    // Create ground plane for scene mode with defaults
+    SceneFileGround defaultGround;
+    defaultGround.enabled = true;
+    defaultGround.size = 10000.0f;  // 20km × 20km
+    defaultGround.color[0] = 0.3f; defaultGround.color[1] = 0.4f;
+    defaultGround.color[2] = 0.3f; defaultGround.color[3] = 1.0f;
+    defaultGround.hasRunway = true;
+    defaultGround.runwayWidth = 60.0f;
+    defaultGround.runwayLength = 2000.0f;
+    createGroundPlane(defaultGround);
     
     // Create procedural normal map for testing
     LOG_INFO("Creating procedural normal map...");
@@ -836,86 +844,129 @@ Mat4 CubeApp::createTransformMatrix(float x, float y, float z, float rotY, float
 
 // Create example scene with 100 airplanes
 // Create ground plane - a grid to show spatial reference
-void CubeApp::createGroundPlane() {
-    LOG_INFO("Creating ground plane...");
-    
-    const float gridSize = 200.0f;    // Total size
-    const int gridDivisions = 20;     // Number of cells
-    const float step = gridSize / gridDivisions;
-    const float halfSize = gridSize * 0.5f;
-    const float groundY = -10.0f;
+void CubeApp::createGroundPlane(const SceneFileGround& groundConfig) {
+    LOG_INFO("Creating ground plane%s...", groundConfig.hasRunway ? " with runway" : "");
     
     std::vector<Vertex> vertices;
     std::vector<uint16_t> indices;
     
-    // Create a flat grid of quads
-    for (int z = 0; z < gridDivisions; z++) {
-        for (int x = 0; x < gridDivisions; x++) {
-            float x0 = -halfSize + x * step;
-            float x1 = x0 + step;
-            float z0 = -halfSize + z * step;
-            float z1 = z0 + step;
-            
-            // Checkerboard pattern - alternating colors
-            bool isLight = ((x + z) % 2) == 0;
-            float brightness = isLight ? 0.25f : 0.15f;
-            
-            // Highlight center lines
-            bool isCenterX = (x == gridDivisions / 2);
-            bool isCenterZ = (z == gridDivisions / 2);
-            
-            float r = brightness, g = brightness, b = brightness;
-            if (isCenterX) r = 0.4f;  // Red X axis
-            if (isCenterZ) b = 0.4f;  // Blue Z axis
-            
-            // Create quad (2 triangles)
-            uint16_t baseIdx = (uint16_t)vertices.size();
-            
-            Vertex v0, v1, v2, v3;
-            v0.px = x0; v0.py = groundY; v0.pz = z0;
-            v0.nx = 0; v0.ny = 1; v0.nz = 0;
-            v0.r = r; v0.g = g; v0.b = b; v0.a = 1.0f;
-            v0.u = 0; v0.v = 0;
-            
-            v1.px = x1; v1.py = groundY; v1.pz = z0;
-            v1.nx = 0; v1.ny = 1; v1.nz = 0;
-            v1.r = r; v1.g = g; v1.b = b; v1.a = 1.0f;
-            v1.u = 0; v1.v = 0;
-            
-            v2.px = x1; v2.py = groundY; v2.pz = z1;
-            v2.nx = 0; v2.ny = 1; v2.nz = 0;
-            v2.r = r; v2.g = g; v2.b = b; v2.a = 1.0f;
-            v2.u = 0; v2.v = 0;
-            
-            v3.px = x0; v3.py = groundY; v3.pz = z1;
-            v3.nx = 0; v3.ny = 1; v3.nz = 0;
-            v3.r = r; v3.g = g; v3.b = b; v3.a = 1.0f;
-            v3.u = 0; v3.v = 0;
-            
-            vertices.push_back(v0);
-            vertices.push_back(v1);
-            vertices.push_back(v2);
-            vertices.push_back(v3);
-            
-            // Triangle 1: v0, v1, v2
-            indices.push_back(baseIdx + 0);
-            indices.push_back(baseIdx + 1);
-            indices.push_back(baseIdx + 2);
-            
-            // Triangle 2: v0, v2, v3
-            indices.push_back(baseIdx + 0);
-            indices.push_back(baseIdx + 2);
-            indices.push_back(baseIdx + 3);
-        }
+    const float groundY = 0.0f;  // Ground at Y=0
+    
+    // ==================== GROUND SURFACE ====================
+    
+    float surfSize = groundConfig.size;  // Use size from scene file
+    
+    Vertex sv0, sv1, sv2, sv3;
+    
+    // Vertex positions (large quad)
+    sv0.px = -surfSize; sv0.py = groundY; sv0.pz = -surfSize;
+    sv1.px = -surfSize; sv1.py = groundY; sv1.pz =  surfSize;
+    sv2.px =  surfSize; sv2.py = groundY; sv2.pz =  surfSize;
+    sv3.px =  surfSize; sv3.py = groundY; sv3.pz = -surfSize;
+    
+    // Normals (all pointing up)
+    sv0.nx = sv1.nx = sv2.nx = sv3.nx = 0.0f;
+    sv0.ny = sv1.ny = sv2.ny = sv3.ny = 1.0f;
+    sv0.nz = sv1.nz = sv2.nz = sv3.nz = 0.0f;
+    
+    // Ground color from scene file
+    float gr = groundConfig.color[0];
+    float gg = groundConfig.color[1];
+    float gb = groundConfig.color[2];
+    float ga = groundConfig.color[3];
+    sv0.r = sv1.r = sv2.r = sv3.r = gr;
+    sv0.g = sv1.g = sv2.g = sv3.g = gg;
+    sv0.b = sv1.b = sv2.b = sv3.b = gb;
+    sv0.a = sv1.a = sv2.a = sv3.a = ga;
+    
+    // Texture coordinates - tiled
+    float texRepeat = surfSize / 500.0f;  // Repeat every 500m
+    sv0.u = 0.0f;       sv0.v = 0.0f;
+    sv1.u = 0.0f;       sv1.v = texRepeat;
+    sv2.u = texRepeat;  sv2.v = texRepeat;
+    sv3.u = texRepeat;  sv3.v = 0.0f;
+    
+    // Add ground quad
+    uint16_t baseIdx = 0;
+    vertices.push_back(sv0);
+    vertices.push_back(sv1);
+    vertices.push_back(sv2);
+    vertices.push_back(sv3);
+    
+    // Ground indices (2 triangles)
+    indices.push_back(baseIdx + 0);
+    indices.push_back(baseIdx + 1);
+    indices.push_back(baseIdx + 2);
+    
+    indices.push_back(baseIdx + 0);
+    indices.push_back(baseIdx + 2);
+    indices.push_back(baseIdx + 3);
+    
+    // ==================== RUNWAY STRIP (Optional) ====================
+    
+    if (groundConfig.hasRunway) {
+        float stripWidth = groundConfig.runwayWidth / 2.0f;    // Half-width (±)
+        float stripLength = groundConfig.runwayLength / 2.0f;  // Half-length (±)
+        float stripY = 0.1f;  // Slightly above ground (z-fighting prevention)
+        
+        Vertex rs0, rs1, rs2, rs3;
+        
+        // Runway positions (centered, runs along Z axis)
+        rs0.px = -stripWidth; rs0.py = stripY; rs0.pz = -stripLength;
+        rs1.px = -stripWidth; rs1.py = stripY; rs1.pz =  stripLength;
+        rs2.px =  stripWidth; rs2.py = stripY; rs2.pz =  stripLength;
+        rs3.px =  stripWidth; rs3.py = stripY; rs3.pz = -stripLength;
+        
+        // Normals (up)
+        rs0.nx = rs1.nx = rs2.nx = rs3.nx = 0.0f;
+        rs0.ny = rs1.ny = rs2.ny = rs3.ny = 1.0f;
+        rs0.nz = rs1.nz = rs2.nz = rs3.nz = 0.0f;
+        
+        // Runway color from scene file
+        float rr = groundConfig.runwayColor[0];
+        float rg = groundConfig.runwayColor[1];
+        float rb = groundConfig.runwayColor[2];
+        float ra = groundConfig.runwayColor[3];
+        rs0.r = rs1.r = rs2.r = rs3.r = rr;
+        rs0.g = rs1.g = rs2.g = rs3.g = rg;
+        rs0.b = rs1.b = rs2.b = rs3.b = rb;
+        rs0.a = rs1.a = rs2.a = rs3.a = ra;
+        
+        // Texture coordinates (repeats every 100m)
+        float runwayRepeat = groundConfig.runwayLength / 100.0f;
+        rs0.u = 0.0f;           rs0.v = 0.0f;
+        rs1.u = 0.0f;           rs1.v = runwayRepeat;
+        rs2.u = runwayRepeat;   rs2.v = runwayRepeat;
+        rs3.u = runwayRepeat;   rs3.v = 0.0f;
+        
+        // Add runway quad
+        baseIdx = (uint16_t)vertices.size();
+        vertices.push_back(rs0);
+        vertices.push_back(rs1);
+        vertices.push_back(rs2);
+        vertices.push_back(rs3);
+        
+        // Runway indices (2 triangles)
+        indices.push_back(baseIdx + 0);
+        indices.push_back(baseIdx + 1);
+        indices.push_back(baseIdx + 2);
+        
+        indices.push_back(baseIdx + 0);
+        indices.push_back(baseIdx + 2);
+        indices.push_back(baseIdx + 3);
+        
+        LOG_INFO("  Runway: %.0fm × %.0fm", groundConfig.runwayWidth, groundConfig.runwayLength);
     }
+    
+    // ==================== CREATE MESH ====================
     
     m_groundMesh = m_renderer->createMesh(
         vertices.data(), (uint32_t)vertices.size(),
         indices.data(), (uint32_t)indices.size()
     );
     
-    LOG_INFO("Ground plane created: %zu vertices, %zu triangles", 
-             vertices.size(), indices.size() / 3);
+    LOG_INFO("Ground created: %.0fm×%.0fm terrain (%zu verts, %zu tris)", 
+             surfSize * 2.0f, surfSize * 2.0f, vertices.size(), indices.size() / 3);
 }
 
 // Update FPS camera for scene mode
@@ -1147,9 +1198,18 @@ bool CubeApp::loadScene(const SceneFile& scene) {
         LOG_DEBUG("Light: dir(%.2f, %.2f, %.2f)", lightDir.x, lightDir.y, lightDir.z);
     }
     
-    // Apply ground settings
+    // Apply ground settings - recreate ground with scene configuration
     m_showGround = scene.ground.enabled;
-    LOG_DEBUG("Ground: %s", m_showGround ? "enabled" : "disabled");
+    if (m_showGround) {
+        // Recreate ground mesh with scene file settings
+        if (m_groundMesh) {
+            m_renderer->destroyMesh(m_groundMesh);
+        }
+        createGroundPlane(scene.ground);
+    }
+    LOG_DEBUG("Ground: %s%s", 
+             m_showGround ? "enabled" : "disabled",
+             scene.ground.hasRunway ? " with runway" : "");
     
     // Apply background settings
     m_useLightBackground = scene.background.enabled;

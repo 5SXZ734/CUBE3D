@@ -139,6 +139,14 @@ bool SceneLoader::loadScene(const char* filepath, SceneFile& outScene) {
             
             float defaultColor[4] = {0.3f, 0.3f, 0.3f, 1.0f};
             readFloatArray(gr, "color", outScene.ground.color, defaultColor);
+            
+            // Runway configuration
+            if (gr.contains("hasRunway")) outScene.ground.hasRunway = gr["hasRunway"];
+            if (gr.contains("runwayWidth")) outScene.ground.runwayWidth = gr["runwayWidth"];
+            if (gr.contains("runwayLength")) outScene.ground.runwayLength = gr["runwayLength"];
+            
+            float defaultRunwayColor[4] = {0.5f, 0.5f, 0.5f, 1.0f};
+            readFloatArray(gr, "runwayColor", outScene.ground.runwayColor, defaultRunwayColor);
         }
         
         // Background
@@ -224,6 +232,10 @@ bool SceneLoader::saveScene(const char* filepath, const SceneFile& scene) {
         j["ground"]["enabled"] = scene.ground.enabled;
         j["ground"]["size"] = scene.ground.size;
         writeFloatArray(j["ground"], "color", scene.ground.color);
+        j["ground"]["hasRunway"] = scene.ground.hasRunway;
+        j["ground"]["runwayWidth"] = scene.ground.runwayWidth;
+        j["ground"]["runwayLength"] = scene.ground.runwayLength;
+        writeFloatArray(j["ground"], "runwayColor", scene.ground.runwayColor);
         
         // Background
         j["background"]["enabled"] = scene.background.enabled;

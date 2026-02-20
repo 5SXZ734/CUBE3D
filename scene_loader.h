@@ -43,6 +43,12 @@ struct SceneFileGround {
     bool enabled = false;
     float size = 100.0f;
     float color[4] = {0.3f, 0.3f, 0.3f, 1.0f};
+    
+    // Runway/airstrip configuration
+    bool hasRunway = false;
+    float runwayWidth = 60.0f;      // meters (default 60m)
+    float runwayLength = 2000.0f;   // meters (default 2km)
+    float runwayColor[4] = {0.5f, 0.5f, 0.5f, 1.0f};  // Gray concrete
 };
 
 struct SceneFileBackground {
