@@ -92,9 +92,9 @@ struct AircraftParams {
         , liftCoeff(0.5f)
         , dragCoeff(0.025f)
         , sideForceCoeff(0.0f)
-        , elevatorPower(2.0f)
-        , aileronPower(3.0f)
-        , rudderPower(1.5f)
+        , elevatorPower(8.0f)           // Increased from 2.0 - very responsive pitch
+        , aileronPower(12.0f)           // Increased from 3.0 - fast roll rate
+        , rudderPower(6.0f)             // Increased from 1.5 - better yaw authority
         , maxThrust(16870.0f)           // 1720 kgf
         , pitchStability(0.8f)
         , rollStability(0.9f)
@@ -139,7 +139,7 @@ public:
 private:
     // Physics calculations
     void computeForces(Vec3& force, Vec3& torque);
-    void integrateState(float dt);
+    void integrateState(float dt, const Vec3& force, const Vec3& torque);
     
     // Coordinate transforms
     Vec3 bodyToWorld(const Vec3& bodyVec) const;

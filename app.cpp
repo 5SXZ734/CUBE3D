@@ -299,20 +299,26 @@ void CubeApp::update(float deltaTime) {
         // Gather control inputs from key states
         ControlInputs& controls = m_flightDynamics.getControlInputs();
         
-        // Pitch: Arrow Up = pitch down (-), Arrow Down = pitch up (+)
+        // Pitch: Arrow Up = pitch up (nose up), Arrow Down = pitch down (nose down)
         controls.elevator = 0;
-        if (m_arrowUpPressed) controls.elevator -= 1.0f;
-        if (m_arrowDownPressed) controls.elevator += 1.0f;
+        if (m_arrowUpPressed) controls.elevator += 1.0f;      // Reversed
+        if (m_arrowDownPressed) controls.elevator -= 1.0f;    // Reversed
         
-        // Roll: Arrow Left = roll left (-), Arrow Right = roll right (+)
+        // Roll: Arrow Left = roll left, Arrow Right = roll right
         controls.aileron = 0;
-        if (m_arrowLeftPressed) controls.aileron -= 1.0f;
-        if (m_arrowRightPressed) controls.aileron += 1.0f;
+        if (m_arrowLeftPressed) controls.aileron += 1.0f;     // Reversed
+        if (m_arrowRightPressed) controls.aileron -= 1.0f;    // Reversed
         
-        // Rudder: Delete = yaw left (-), Page Down = yaw right (+)
+        // Rudder: Delete = yaw left, Page Down = yaw right
         controls.rudder = 0;
-        if (m_deletePressed) controls.rudder -= 1.0f;
-        if (m_pageDownPressed) controls.rudder += 1.0f;
+        if (m_deletePressed) controls.rudder += 1.0f;         // Reversed
+        if (m_pageDownPressed) controls.rudder -= 1.0f;       // Reversed
+        
+        // Debug: Log controls if any are active
+        if (controls.elevator != 0 || controls.aileron != 0 || controls.rudder != 0) {
+            LOG_DEBUG("Controls: elev=%.2f ail=%.2f rud=%.2f thr=%.2f",
+                     controls.elevator, controls.aileron, controls.rudder, controls.throttle);
+        }
         
         // Throttle is adjusted with +/- keys (handled in onKey)
         

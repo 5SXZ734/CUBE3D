@@ -53,12 +53,12 @@ void FlightDynamics::setControlInputs(const ControlInputs& inputs) {
 void FlightDynamics::update(float deltaTime) {
     if (deltaTime <= 0.0f || deltaTime > 1.0f) return;  // Sanity check
     
-    // Compute forces and torques
+    // Compute forces and torques ONCE
     Vec3 force, torque;
     computeForces(force, torque);
     
-    // Integrate state
-    integrateState(deltaTime);
+    // Integrate state using the computed forces
+    integrateState(deltaTime, force, torque);
     
     // Enforce ground constraint
     if (m_state.position.y < 2.0f) {
@@ -73,6 +73,13 @@ void FlightDynamics::update(float deltaTime) {
 }
 
 void FlightDynamics::computeForces(Vec3& force, Vec3& torque) {
+    // Debug: Log at entry
+    static int frameCount = 0;
+    if (++frameCount % 60 == 0 && (m_controls.elevator != 0 || m_controls.aileron != 0 || m_controls.rudder != 0)) {
+        LOG_DEBUG("computeForces: controls(e=%.2f a=%.2f r=%.2f)",
+                 m_controls.elevator, m_controls.aileron, m_controls.rudder);
+    }
+    
     // ==================== FORCES (Newtons) ====================
     
     // 1. THRUST (body frame, forward is -Z)
@@ -125,8 +132,9 @@ void FlightDynamics::computeForces(Vec3& force, Vec3& torque) {
     // ==================== TORQUES (Newton-meters) ====================
     
     // Control surface effectiveness scales with dynamic pressure
-    float controlPower = q * 0.01f;  // Scale factor
-    controlPower = clamp(controlPower, 1.0f, 100.0f);  // Min/max limits
+    // Increased multiplier for jet trainer responsiveness
+    float controlPower = q * 0.03f;  // Increased from 0.01 - more control authority
+    controlPower = clamp(controlPower, 5.0f, 150.0f);  // Higher minimum for low-speed control
     
     // Pitch moment (elevator)
     // Positive elevator (nose up) creates negative pitch moment (nose down in our coord system)
@@ -147,37 +155,74 @@ void FlightDynamics::computeForces(Vec3& force, Vec3& torque) {
     torque = {pitchMoment, yawMoment, rollMoment};
 }
 
-void FlightDynamics::integrateState(float dt) {
-    // Moment of inertia (simplified for L-39)
-    float Ixx = m_params.mass * m_params.wingspan * m_params.wingspan * 0.15f;  // Roll
-    float Iyy = m_params.mass * 12.0f * 12.0f * 0.15f;  // Pitch (fuselage length ~12m)
-    float Izz = m_params.mass * m_params.wingspan * m_params.wingspan * 0.15f;  // Yaw
+void FlightDynamics::integrateState(float dt, const Vec3& force, const Vec3& torque) {
+    // Moment of inertia for L-39 jet trainer (nimble aircraft)
+    // Using very low values for high maneuverability
+    float Ixx = m_params.mass * m_params.wingspan * m_params.wingspan * 0.0008f;  // Roll - very responsive
+    float Iyy = m_params.mass * 12.0f * 12.0f * 0.0008f;  // Pitch - very responsive
+    float Izz = m_params.mass * m_params.wingspan * m_params.wingspan * 0.0010f;  // Yaw - slightly heavier
     
-    // Compute forces and torques
-    Vec3 force, torque;
-    computeForces(force, torque);
+    // Debug: Log inertia values once
+    static bool logged = false;
+    if (!logged) {
+        LOG_INFO("Moments of inertia: Ixx=%.1f Iyy=%.1f Izz=%.1f kg⋅m²", Ixx, Iyy, Izz);
+        logged = true;
+    }
+    
+    // Debug: Log torques if any control input
+    if (fabs(torque.x) > 0.1f || fabs(torque.y) > 0.1f || fabs(torque.z) > 0.1f) {
+        LOG_DEBUG("Torques: pitch=%.2f yaw=%.2f roll=%.2f N⋅m", 
+                 torque.x, torque.y, torque.z);
+    }
+    
+    // Use the forces and torques passed in (no recomputation!)
     
     // ==================== ANGULAR INTEGRATION ====================
     
     // Angular acceleration = torque / moment of inertia
-    float pitchAccel = torque.x / Ixx;
-    float yawAccel = torque.y / Iyy;
-    float rollAccel = torque.z / Izz;
+    // torque.x = pitch torque, torque.y = yaw torque, torque.z = roll torque
+    float pitchAccel = torque.x / Iyy;  // Pitch uses Iyy (fuselage)
+    float yawAccel = torque.y / Izz;    // Yaw uses Izz (wingspan)
+    float rollAccel = torque.z / Ixx;   // Roll uses Ixx (wingspan)
+    
+    // Debug: Log accelerations if significant
+    if (fabs(pitchAccel) > 0.01f || fabs(yawAccel) > 0.01f || fabs(rollAccel) > 0.01f) {
+        LOG_DEBUG("Angular accel: pitch=%.3f yaw=%.3f roll=%.3f rad/s²",
+                 pitchAccel, yawAccel, rollAccel);
+    }
     
     // Update angular velocities
     m_state.pitchRate += pitchAccel * dt;
     m_state.yawRate += yawAccel * dt;
     m_state.rollRate += rollAccel * dt;
     
-    // Clamp angular rates to realistic values
-    m_state.pitchRate = clamp(m_state.pitchRate, -2.0f, 2.0f);  // ~115 deg/s
-    m_state.yawRate = clamp(m_state.yawRate, -1.5f, 1.5f);      // ~86 deg/s
-    m_state.rollRate = clamp(m_state.rollRate, -3.0f, 3.0f);    // ~172 deg/s
+    // Debug: Show rates after update
+    if (fabs(pitchAccel) > 0.01f || fabs(yawAccel) > 0.01f || fabs(rollAccel) > 0.01f) {
+        LOG_DEBUG("Angular rates: pitch=%.3f yaw=%.3f roll=%.3f rad/s",
+                 m_state.pitchRate, m_state.yawRate, m_state.rollRate);
+    }
+    
+    // Clamp angular rates to realistic values for L-39 jet trainer
+    m_state.pitchRate = clamp(m_state.pitchRate, -4.0f, 4.0f);  // ~230 deg/s (was 115)
+    m_state.yawRate = clamp(m_state.yawRate, -3.0f, 3.0f);      // ~172 deg/s (was 86)
+    m_state.rollRate = clamp(m_state.rollRate, -6.0f, 6.0f);    // ~344 deg/s (was 172) - fast rolls!
     
     // Update orientation (Euler angles)
+    float oldPitch = m_state.pitch;
+    float oldYaw = m_state.yaw;
+    float oldRoll = m_state.roll;
+    
     m_state.pitch += m_state.pitchRate * dt;
     m_state.yaw += m_state.yawRate * dt;
     m_state.roll += m_state.rollRate * dt;
+    
+    // Debug: Show orientation changes
+    if (fabs(m_state.pitch - oldPitch) > 0.001f || 
+        fabs(m_state.yaw - oldYaw) > 0.001f || 
+        fabs(m_state.roll - oldRoll) > 0.001f) {
+        LOG_DEBUG("Orientation: pitch=%.3f° yaw=%.3f° roll=%.3f°",
+                 m_state.pitch * 57.2958f, m_state.yaw * 57.2958f, m_state.roll * 57.2958f);
+    }
     
     // Normalize angles to -PI..PI
     const float PI = 3.14159265359f;
