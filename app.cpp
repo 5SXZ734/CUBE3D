@@ -101,6 +101,8 @@ CubeApp::CubeApp()
     , m_strictValidation(false)
     , m_showStats(false)
     , m_groundMesh(0)
+    , m_groundTexture(0)
+    , m_runwayTexture(0)
     , m_showGround(true)
     , m_proceduralNormalMap(0)
     , m_useNormalMapping(false)
@@ -539,8 +541,8 @@ void CubeApp::render() {
             Mat4 groundMVP = viewProj;
             m_renderer->setUniformMat4(m_shader, "uMVP", groundMVP);
             m_renderer->setUniformMat4(m_shader, "uWorld", groundWorld);
-            m_renderer->setUniformInt(m_shader, "uUseTexture", 0);
-            m_renderer->drawMesh(m_groundMesh, 0);
+            m_renderer->setUniformInt(m_shader, "uUseTexture", m_groundTexture ? 1 : 0);
+            m_renderer->drawMesh(m_groundMesh, m_groundTexture);
         }
         
         // If using scene system (100 planes), render from m_scene
@@ -599,8 +601,8 @@ void CubeApp::render() {
             Mat4 groundMVP = viewProj;
             m_renderer->setUniformMat4(m_shader, "uMVP", groundMVP);
             m_renderer->setUniformMat4(m_shader, "uWorld", groundWorld);
-            m_renderer->setUniformInt(m_shader, "uUseTexture", 0);
-            m_renderer->drawMesh(m_groundMesh, 0);
+            m_renderer->setUniformInt(m_shader, "uUseTexture", m_groundTexture ? 1 : 0);
+            m_renderer->drawMesh(m_groundMesh, m_groundTexture);
         }
         
         // Apply auto-rotation if enabled
@@ -852,6 +854,27 @@ void CubeApp::createGroundPlane(const SceneFileGround& groundConfig) {
     
     const float groundY = 0.0f;  // Ground at Y=0
     
+    // ==================== LOAD TEXTURES ====================
+    
+    m_groundTexture = 0;
+    m_runwayTexture = 0;
+    
+    if (!groundConfig.texturePath.empty()) {
+        LOG_INFO("  Loading ground texture: %s", groundConfig.texturePath.c_str());
+        m_groundTexture = m_renderer->createTexture(groundConfig.texturePath.c_str());
+        if (!m_groundTexture) {
+            LOG_WARNING("Failed to load ground texture, using solid color");
+        }
+    }
+    
+    if (groundConfig.hasRunway && !groundConfig.runwayTexturePath.empty()) {
+        LOG_INFO("  Loading runway texture: %s", groundConfig.runwayTexturePath.c_str());
+        m_runwayTexture = m_renderer->createTexture(groundConfig.runwayTexturePath.c_str());
+        if (!m_runwayTexture) {
+            LOG_WARNING("Failed to load runway texture, using solid color");
+        }
+    }
+    
     // ==================== GROUND SURFACE ====================
     
     float surfSize = groundConfig.size;  // Use size from scene file
@@ -885,6 +908,14 @@ void CubeApp::createGroundPlane(const SceneFileGround& groundConfig) {
     sv1.u = 0.0f;       sv1.v = texRepeat;
     sv2.u = texRepeat;  sv2.v = texRepeat;
     sv3.u = texRepeat;  sv3.v = 0.0f;
+    
+    // Tangents and bitangents (for normal mapping, if used)
+    sv0.tx = sv1.tx = sv2.tx = sv3.tx = 1.0f;
+    sv0.ty = sv1.ty = sv2.ty = sv3.ty = 0.0f;
+    sv0.tz = sv1.tz = sv2.tz = sv3.tz = 0.0f;
+    sv0.bx = sv1.bx = sv2.bx = sv3.bx = 0.0f;
+    sv0.by = sv1.by = sv2.by = sv3.by = 0.0f;
+    sv0.bz = sv1.bz = sv2.bz = sv3.bz = 1.0f;
     
     // Add ground quad
     uint16_t baseIdx = 0;
@@ -939,6 +970,14 @@ void CubeApp::createGroundPlane(const SceneFileGround& groundConfig) {
         rs2.u = runwayRepeat;   rs2.v = runwayRepeat;
         rs3.u = runwayRepeat;   rs3.v = 0.0f;
         
+        // Tangents and bitangents
+        rs0.tx = rs1.tx = rs2.tx = rs3.tx = 1.0f;
+        rs0.ty = rs1.ty = rs2.ty = rs3.ty = 0.0f;
+        rs0.tz = rs1.tz = rs2.tz = rs3.tz = 0.0f;
+        rs0.bx = rs1.bx = rs2.bx = rs3.bx = 0.0f;
+        rs0.by = rs1.by = rs2.by = rs3.by = 0.0f;
+        rs0.bz = rs1.bz = rs2.bz = rs3.bz = 1.0f;
+        
         // Add runway quad
         baseIdx = (uint16_t)vertices.size();
         vertices.push_back(rs0);
@@ -967,6 +1006,7 @@ void CubeApp::createGroundPlane(const SceneFileGround& groundConfig) {
     
     LOG_INFO("Ground created: %.0fm×%.0fm terrain (%zu verts, %zu tris)", 
              surfSize * 2.0f, surfSize * 2.0f, vertices.size(), indices.size() / 3);
+    LOG_INFO("  Ground texture: %u, Runway texture: %u", m_groundTexture, m_runwayTexture);
 }
 
 // Update FPS camera for scene mode

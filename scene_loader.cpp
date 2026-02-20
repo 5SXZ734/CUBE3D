@@ -147,6 +147,14 @@ bool SceneLoader::loadScene(const char* filepath, SceneFile& outScene) {
             
             float defaultRunwayColor[4] = {0.5f, 0.5f, 0.5f, 1.0f};
             readFloatArray(gr, "runwayColor", outScene.ground.runwayColor, defaultRunwayColor);
+            
+            // TEXTURE PATHS - NEW!
+            if (gr.contains("texturePath") && gr["texturePath"].is_string()) {
+                outScene.ground.texturePath = gr["texturePath"].get<std::string>();
+            }
+            if (gr.contains("runwayTexturePath") && gr["runwayTexturePath"].is_string()) {
+                outScene.ground.runwayTexturePath = gr["runwayTexturePath"].get<std::string>();
+            }
         }
         
         // Background
@@ -236,6 +244,14 @@ bool SceneLoader::saveScene(const char* filepath, const SceneFile& scene) {
         j["ground"]["runwayWidth"] = scene.ground.runwayWidth;
         j["ground"]["runwayLength"] = scene.ground.runwayLength;
         writeFloatArray(j["ground"], "runwayColor", scene.ground.runwayColor);
+        
+        // TEXTURE PATHS - NEW!
+        if (!scene.ground.texturePath.empty()) {
+            j["ground"]["texturePath"] = scene.ground.texturePath;
+        }
+        if (!scene.ground.runwayTexturePath.empty()) {
+            j["ground"]["runwayTexturePath"] = scene.ground.runwayTexturePath;
+        }
         
         // Background
         j["background"]["enabled"] = scene.background.enabled;
