@@ -61,6 +61,11 @@ CubeApp::CubeApp()
     , m_cameraType(CAMERA_ORBIT)  // Default to orbit camera
     , m_autoRotate(true)  // Default to auto-rotate
     , m_flightMode(false)
+    , m_chaseCameraPos({0, 0, 0})
+    , m_chaseCameraTarget({0, 0, 0})
+    , m_chaseDistance(25.0f)     // 25 meters behind
+    , m_chaseHeight(8.0f)        // 8 meters above
+    , m_chaseSmoothness(0.92f)   // Smooth following
     , m_arrowUpPressed(false)
     , m_arrowDownPressed(false)
     , m_arrowLeftPressed(false)
@@ -313,6 +318,9 @@ void CubeApp::update(float deltaTime) {
         
         // Update physics
         m_flightDynamics.update(deltaTime);
+        
+        // Update chase camera to follow aircraft
+        updateChaseCamera(deltaTime);
     }
 }
 
@@ -483,19 +491,31 @@ void CubeApp::render() {
 
     // Render based on camera type
     if (m_cameraType == CAMERA_FPS && m_hasModel) {
-        // FPS camera mode
-        updateFPSCamera(m_deltaTime);
+        // Choose camera based on flight mode
+        Vec3 cameraPos, cameraTarget;
         
-        // Build view matrix from FPS camera
-        Vec3 target = {
-            m_cameraPos.x + m_cameraForward.x,
-            m_cameraPos.y + m_cameraForward.y,
-            m_cameraPos.z + m_cameraForward.z
-        };
+        if (m_flightMode) {
+            // Chase camera follows aircraft
+            cameraPos = m_chaseCameraPos;
+            cameraTarget = m_chaseCameraTarget;
+            LOG_DEBUG("Rendering with chase camera: pos(%.1f, %.1f, %.1f)", 
+                     cameraPos.x, cameraPos.y, cameraPos.z);
+        } else {
+            // Normal FPS camera
+            updateFPSCamera(m_deltaTime);
+            cameraPos = m_cameraPos;
+            cameraTarget = {
+                m_cameraPos.x + m_cameraForward.x,
+                m_cameraPos.y + m_cameraForward.y,
+                m_cameraPos.z + m_cameraForward.z
+            };
+            LOG_DEBUG("Rendering with FPS camera: pos(%.1f, %.1f, %.1f)", 
+                     cameraPos.x, cameraPos.y, cameraPos.z);
+        }
         
-        // Use world up (0,1,0) directly - simpler and more reliable
+        // Build view matrix
         Vec3 worldUp = {0, 1, 0};
-        Mat4 view = mat4_lookAtRH(m_cameraPos, target, worldUp);
+        Mat4 view = mat4_lookAtRH(cameraPos, cameraTarget, worldUp);
         Mat4 proj = mat4_perspectiveRH_NO(60.0f * 3.14159265359f / 180.0f, aspect, 0.1f, 1000.0f);
         Mat4 viewProj = mat4_mul(proj, view);
         
@@ -725,11 +745,24 @@ void CubeApp::onKey(int key, int scancode, int action, int mods) {
         LOG_INFO("Flight mode: %s", m_flightMode ? "ENABLED" : "DISABLED");
         
         if (m_flightMode) {
-            // Initialize flight dynamics at current position or default
-            Vec3 startPos = m_hasModel ? Vec3{0, 100, 0} : Vec3{0, 100, 0};
-            m_flightDynamics.initialize(startPos, 0.0f);
-            m_cameraType = CAMERA_CHASE;  // Switch to chase camera
+            // Initialize flight dynamics at object's current position
+            Vec3 startPos = m_objectPosition;
+            if (startPos.y < 50.0f) startPos.y = 50.0f;  // Ensure minimum altitude
+            
+            float startHeading = m_objectRotation.y * 3.14159f / 180.0f;  // Convert to radians
+            m_flightDynamics.initialize(startPos, startHeading);
+            
+            // Initialize chase camera at aircraft position
+            m_chaseCameraPos = startPos;
+            m_chaseCameraPos.z += m_chaseDistance;  // Start behind
+            m_chaseCameraPos.y += m_chaseHeight;    // Start above
+            m_chaseCameraTarget = startPos;
+            
+            LOG_INFO("Flight initialized at (%.1f, %.1f, %.1f)", startPos.x, startPos.y, startPos.z);
             LOG_INFO("Flight controls: Arrows=pitch/roll, Del/PgDn=rudder, +/-=throttle");
+        } else {
+            // Restore to FPS camera mode - don't change camera type
+            LOG_INFO("Flight mode disabled - FPS camera restored");
         }
     }
     
@@ -956,6 +989,95 @@ void CubeApp::updateFPSCamera(float deltaTime) {
     if (m_shiftPressed && !m_wPressed && !m_sPressed && !m_aPressed && !m_dPressed) {  // Down (when not used for sprint)
         m_cameraPos.y -= speed;
     }
+}
+
+void CubeApp::updateChaseCamera(float deltaTime) {
+    const AircraftState& state = m_flightDynamics.getState();
+    
+    LOG_DEBUG("Aircraft state: pos(%.1f, %.1f, %.1f) yaw=%.2f pitch=%.2f", 
+             state.position.x, state.position.y, state.position.z,
+             state.yaw, state.pitch);
+    
+    // Calculate ideal camera position behind and above aircraft
+    // Camera offset in aircraft body frame
+    Vec3 offsetBody = {0, m_chaseHeight, m_chaseDistance};  // Behind (+Z) and above (+Y)
+    
+    // Transform offset from body frame to world frame
+    Mat4 aircraftTransform = m_flightDynamics.getTransformMatrix();
+    
+    // Extract rotation from aircraft transform (ignoring translation)
+    // Simplified: just use the aircraft's yaw for now
+    float yaw = state.yaw;
+    float pitch = state.pitch;
+    
+    // Rotate offset vector by aircraft orientation
+    // Apply yaw rotation
+    float cosY = std::cos(yaw);
+    float sinY = std::sin(yaw);
+    Vec3 offsetYaw = {
+        offsetBody.x * cosY - offsetBody.z * sinY,
+        offsetBody.y,
+        offsetBody.x * sinY + offsetBody.z * cosY
+    };
+    
+    // Apply pitch rotation (reduced effect for camera stability)
+    float pitchDamped = pitch * 0.3f;  // Reduce pitch effect on camera
+    float cosP = std::cos(pitchDamped);
+    float sinP = std::sin(pitchDamped);
+    Vec3 offsetWorld = {
+        offsetYaw.x,
+        offsetYaw.y * cosP - offsetYaw.z * sinP,
+        offsetYaw.y * sinP + offsetYaw.z * cosP
+    };
+    
+    // Calculate ideal camera position
+    Vec3 idealCameraPos = {
+        state.position.x + offsetWorld.x,
+        state.position.y + offsetWorld.y,
+        state.position.z + offsetWorld.z
+    };
+    
+    // Smooth camera movement (exponential smoothing)
+    // On first frame or large jumps, snap to position
+    float distance = std::sqrt(
+        (idealCameraPos.x - m_chaseCameraPos.x) * (idealCameraPos.x - m_chaseCameraPos.x) +
+        (idealCameraPos.y - m_chaseCameraPos.y) * (idealCameraPos.y - m_chaseCameraPos.y) +
+        (idealCameraPos.z - m_chaseCameraPos.z) * (idealCameraPos.z - m_chaseCameraPos.z)
+    );
+    
+    if (distance > 100.0f || deltaTime > 0.5f) {
+        // Snap to position (first frame or teleport)
+        m_chaseCameraPos = idealCameraPos;
+    } else {
+        // Smooth interpolation
+        float smoothFactor = 1.0f - std::pow(m_chaseSmoothness, deltaTime * 60.0f);
+        m_chaseCameraPos.x += (idealCameraPos.x - m_chaseCameraPos.x) * smoothFactor;
+        m_chaseCameraPos.y += (idealCameraPos.y - m_chaseCameraPos.y) * smoothFactor;
+        m_chaseCameraPos.z += (idealCameraPos.z - m_chaseCameraPos.z) * smoothFactor;
+    }
+    
+    // Camera looks at a point slightly ahead of aircraft
+    Vec3 lookAheadBody = {0, 0, -10.0f};  // 10 meters forward
+    Vec3 lookAheadWorld = {
+        lookAheadBody.x * cosY - lookAheadBody.z * sinY,
+        lookAheadBody.y,
+        lookAheadBody.x * sinY + lookAheadBody.z * cosY
+    };
+    
+    m_chaseCameraTarget = {
+        state.position.x + lookAheadWorld.x,
+        state.position.y + lookAheadWorld.y,
+        state.position.z + lookAheadWorld.z
+    };
+    
+    // Keep camera above ground
+    if (m_chaseCameraPos.y < 2.0f) {
+        m_chaseCameraPos.y = 2.0f;
+    }
+    
+    LOG_DEBUG("Chase camera: pos(%.1f, %.1f, %.1f) target(%.1f, %.1f, %.1f)",
+             m_chaseCameraPos.x, m_chaseCameraPos.y, m_chaseCameraPos.z,
+             m_chaseCameraTarget.x, m_chaseCameraTarget.y, m_chaseCameraTarget.z);
 }
 
 // ==================== Scene Loading ====================

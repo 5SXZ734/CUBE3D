@@ -53,6 +53,7 @@ private:
     bool loadModel(const char* path);
     void createGroundPlane();   // Create ground grid
     void updateFPSCamera(float deltaTime);  // Update FPS camera for scene mode
+    void updateChaseCamera(float deltaTime); // Update chase camera for flight mode
     Mat4 createTransformMatrix(float x, float y, float z, float rotY, float scale);
 
     // Window
@@ -108,6 +109,15 @@ private:
     // Flight simulation
     bool m_flightMode;              // Is flight simulation active?
     FlightDynamics m_flightDynamics;
+    
+    // Chase camera (for flight mode)
+    Vec3 m_chaseCameraPos;          // Current camera position
+    Vec3 m_chaseCameraTarget;       // Look-at target
+    float m_chaseDistance;          // Distance behind aircraft (meters)
+    float m_chaseHeight;            // Height above aircraft (meters)
+    float m_chaseSmoothness;        // Camera lag smoothing (0-1)
+    
+    // Control inputs
     bool m_arrowUpPressed;
     bool m_arrowDownPressed;
     bool m_arrowLeftPressed;
