@@ -8,11 +8,17 @@
 // ==================== Scene Description Structures ====================
 
 struct SceneFileCamera {
+    enum Type { FPS, ORBIT } type = FPS;  // Camera type
     float position[3] = {0, 5, 20};
     float target[3] = {0, 0, 0};
     float fov = 45.0f;
     float nearPlane = 0.1f;
     float farPlane = 1000.0f;
+    // For orbit camera
+    float distance = 10.0f;
+    float yaw = 0.0f;
+    float pitch = 0.0f;
+    bool autoRotate = false;  // Auto-rotate around target
 };
 
 struct SceneFileLight {

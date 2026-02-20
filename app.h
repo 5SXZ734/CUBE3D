@@ -41,13 +41,15 @@ public:
     
     // Scene loading
     bool loadScene(const SceneFile& scene);
+    
+    // Model/cube creation (public for fallback in main.cpp)
+    bool hasModel() const { return m_hasModel; }
+    bool createDefaultCube();
 
 private:
     void update(float deltaTime);
     void render();
-    bool createDefaultCube();
     bool loadModel(const char* path);
-    void createExampleScene();  // Create 100 airplanes
     void createGroundPlane();   // Create ground grid
     void updateFPSCamera(float deltaTime);  // Update FPS camera for scene mode
     Mat4 createTransformMatrix(float x, float y, float z, float rotY, float scale);
@@ -80,6 +82,10 @@ private:
     std::unordered_map<const Model*, std::vector<uint32_t>> m_modelMeshHandles;
     std::unordered_map<const Model*, std::vector<uint32_t>> m_modelTextureHandles;
     
+    // Scene file for toggling with 'T' key
+    SceneFile m_sceneFile;
+    bool m_hasSceneFile;
+    
     // Ground plane
     uint32_t m_groundMesh;
     bool m_showGround;
@@ -88,7 +94,10 @@ private:
     uint32_t m_proceduralNormalMap;
     bool m_useNormalMapping;
 
-    // Camera/input state (single object mode)
+    // Camera/input state (orbit camera mode)
+    enum CameraType { CAMERA_FPS, CAMERA_ORBIT };
+    CameraType m_cameraType;
+    bool m_autoRotate;
     bool m_dragging;
     double m_lastX;
     double m_lastY;

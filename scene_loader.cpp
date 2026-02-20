@@ -52,6 +52,14 @@ bool SceneLoader::loadScene(const char* filepath, SceneFile& outScene) {
         // Camera
         if (j.contains("camera")) {
             auto& cam = j["camera"];
+            
+            // Camera type
+            if (cam.contains("type")) {
+                std::string typeStr = cam["type"];
+                if (typeStr == "fps" || typeStr == "FPS") outScene.camera.type = SceneFileCamera::FPS;
+                else if (typeStr == "orbit" || typeStr == "ORBIT") outScene.camera.type = SceneFileCamera::ORBIT;
+            }
+            
             float defaultPos[3] = {0, 5, 20};
             float defaultTarget[3] = {0, 0, 0};
             
@@ -61,6 +69,12 @@ bool SceneLoader::loadScene(const char* filepath, SceneFile& outScene) {
             if (cam.contains("fov")) outScene.camera.fov = cam["fov"];
             if (cam.contains("nearPlane")) outScene.camera.nearPlane = cam["nearPlane"];
             if (cam.contains("farPlane")) outScene.camera.farPlane = cam["farPlane"];
+            
+            // Orbit camera specific
+            if (cam.contains("distance")) outScene.camera.distance = cam["distance"];
+            if (cam.contains("yaw")) outScene.camera.yaw = cam["yaw"];
+            if (cam.contains("pitch")) outScene.camera.pitch = cam["pitch"];
+            if (cam.contains("autoRotate")) outScene.camera.autoRotate = cam["autoRotate"];
         }
         
         // Lights
@@ -161,11 +175,16 @@ bool SceneLoader::saveScene(const char* filepath, const SceneFile& scene) {
         
         // Camera
         j["camera"] = json::object();
+        j["camera"]["type"] = (scene.camera.type == SceneFileCamera::FPS) ? "fps" : "orbit";
         writeFloatArray(j["camera"], "position", scene.camera.position);
         writeFloatArray(j["camera"], "target", scene.camera.target);
         j["camera"]["fov"] = scene.camera.fov;
         j["camera"]["nearPlane"] = scene.camera.nearPlane;
         j["camera"]["farPlane"] = scene.camera.farPlane;
+        j["camera"]["distance"] = scene.camera.distance;
+        j["camera"]["yaw"] = scene.camera.yaw;
+        j["camera"]["pitch"] = scene.camera.pitch;
+        j["camera"]["autoRotate"] = scene.camera.autoRotate;
         
         // Lights
         j["lights"] = json::array();

@@ -160,7 +160,9 @@ int main(int argc, char** argv) {
     app.setShowStats(showStats);
     
     LOG_DEBUG("Initializing application...");
-    if (!app.initialize(api, modelPath)) {
+    // If we have a scene file, don't pass modelPath - scene will load its own models
+    const char* initModelPath = hasScene ? nullptr : modelPath;
+    if (!app.initialize(api, initModelPath)) {
         LOG_ERROR("Failed to initialize application");
         DebugManager::shutdown();
         return 1;
@@ -174,10 +176,21 @@ int main(int argc, char** argv) {
         }
     }
     
+    // If still no model loaded, create default cube
+    if (!app.hasModel()) {
+        LOG_INFO("No model loaded - creating default rotating cube");
+        if (!app.createDefaultCube()) {
+            LOG_ERROR("Failed to create default cube");
+            DebugManager::shutdown();
+            return 1;
+        }
+    }
+    
     LOG_INFO("Application initialized successfully");
-    LOG_INFO("Press T to toggle scene mode (100 airplanes with FPS camera)");
-    LOG_INFO("FPS Mode: WASD to move, Left-click + drag to look, Space/Shift up/down");
-    LOG_INFO("Press B for background, G for ground, N for normal mapping, ESC to exit");
+    LOG_INFO("Controls: B=background, G=ground, N=normal mapping, ESC=exit");
+    if (scene.camera.type == SceneFileCamera::FPS) {
+        LOG_INFO("FPS Camera: WASD to move, Left-click+drag to look, Space/Shift for up/down");
+    }
     
     app.run();
     

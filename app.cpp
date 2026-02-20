@@ -125,6 +125,8 @@ CubeApp::CubeApp()
     , m_hasModel(false)
     , m_useSceneMode(false)
     , m_useLightBackground(false)
+    , m_cameraType(CAMERA_ORBIT)  // Default to orbit camera
+    , m_autoRotate(true)  // Default to auto-rotate
     , m_dragging(false)
     , m_lastX(0.0)
     , m_lastY(0.0)
@@ -157,6 +159,7 @@ CubeApp::CubeApp()
     , m_showGround(true)
     , m_proceduralNormalMap(0)
     , m_useNormalMapping(false)
+    , m_hasSceneFile(false)
 {}
 
 CubeApp::~CubeApp() {
@@ -236,7 +239,7 @@ bool CubeApp::initialize(RendererAPI api, const char* modelPath) {
     glfwGetFramebufferSize(m_window, &fbW, &fbH);
     onFramebufferSize(fbW, fbH);
 
-    // Load model or create default cube
+    // Load model or create default cube (unless scene will provide models)
     if (modelPath != nullptr) {
         if (!loadModel(modelPath)) {
             LOG_WARNING("Failed to load model, using default cube");
@@ -245,11 +248,12 @@ bool CubeApp::initialize(RendererAPI api, const char* modelPath) {
             }
         }
     } else {
-        if (!createDefaultCube()) {
-            return false;
-        }
+        // No model path provided
+        // If a scene file will be loaded, it will provide the model
+        // Otherwise we'll create a default cube later
+        LOG_DEBUG("No model path provided - scene will load model or default cube will be created");
     }
-
+    
     // Create shader with texture and normal mapping support
     LOG_DEBUG("Creating shader...");
     m_shader = m_renderer->createShader(OPENGL_VERTEX_SHADER, OPENGL_FRAGMENT_SHADER);
@@ -514,10 +518,9 @@ void CubeApp::render() {
         m_renderer->bindTextureToUnit(m_proceduralNormalMap, 1);
     }
 
-    // Render in scene mode or single object mode
-    if (m_useSceneMode && m_hasModel) {
-        // Scene mode: FPS camera controls
-        // Update FPS camera using deltaTime from main loop
+    // Render based on camera type
+    if (m_cameraType == CAMERA_FPS && m_hasModel) {
+        // FPS camera mode
         updateFPSCamera(m_deltaTime);
         
         // Build view matrix from FPS camera
@@ -533,37 +536,63 @@ void CubeApp::render() {
         Mat4 proj = mat4_perspectiveRH_NO(60.0f * 3.14159265359f / 180.0f, aspect, 0.1f, 1000.0f);
         Mat4 viewProj = mat4_mul(proj, view);
         
-        m_renderer->setUniformMat4(m_shader, "uMVP", viewProj);
-        
         // Draw ground plane first
         if (m_showGround && m_groundMesh) {
             Mat4 groundWorld = mat4_identity();
-            Mat4 groundMVP = viewProj;  // Ground at origin, identity world transform
+            Mat4 groundMVP = viewProj;
             m_renderer->setUniformMat4(m_shader, "uMVP", groundMVP);
             m_renderer->setUniformMat4(m_shader, "uWorld", groundWorld);
             m_renderer->setUniformInt(m_shader, "uUseTexture", 0);
-            
-            // Draw as lines
             m_renderer->drawMesh(m_groundMesh, 0);
-            
-            // Reset for scene rendering
-            m_renderer->setUniformMat4(m_shader, "uMVP", viewProj);
         }
         
-        m_scene.render(m_renderer, m_modelMeshHandles, m_modelTextureHandles);
-        
-        // Track scene stats
-        if (m_showStats || m_debugMode) {
-            auto sceneStats = m_scene.getRenderStats();
-            m_stats.drawCalls = sceneStats.drawCalls;
-            m_stats.meshesDrawn = sceneStats.instancesDrawn;
+        // If using scene system (100 planes), render from m_scene
+        if (m_useSceneMode) {
+            m_renderer->setUniformMat4(m_shader, "uMVP", viewProj);
+            m_scene.render(m_renderer, m_modelMeshHandles, m_modelTextureHandles);
+            
+            if (m_showStats || m_debugMode) {
+                auto sceneStats = m_scene.getRenderStats();
+                m_stats.drawCalls = sceneStats.drawCalls;
+                m_stats.meshesDrawn = sceneStats.instancesDrawn;
+            }
+        } else {
+            // Render single object from m_meshes at origin
+            Mat4 world = mat4_identity();
+            Mat4 mvp = mat4_mul(viewProj, world);
+            
+            m_renderer->setUniformMat4(m_shader, "uMVP", mvp);
+            m_renderer->setUniformMat4(m_shader, "uWorld", world);
+            
+            for (size_t i = 0; i < m_meshes.size(); i++) {
+                const auto& mesh = m_meshes[i];
+                m_renderer->setUniformInt(m_shader, "uUseTexture", mesh.textureHandle ? 1 : 0);
+                m_renderer->drawMesh(mesh.meshHandle, mesh.textureHandle);
+                
+                if (m_showStats || m_debugMode) {
+                    m_stats.drawCalls++;
+                    m_stats.meshesDrawn++;
+                }
+            }
         }
     } else {
-        // Single object mode: original behavior
+        // Orbit camera mode
         Mat4 view = mat4_lookAtRH({0, 0, m_distance}, {0, 0, 0}, {0, 1, 0});
         Mat4 proj = mat4_perspectiveRH_NO(60.0f * 3.14159265359f / 180.0f, aspect, 0.1f, 100.0f);
+        Mat4 viewProj = mat4_mul(proj, view);
         
-        Mat4 RyAuto = mat4_rotate_y(t * 0.3f);
+        // Draw ground first if enabled
+        if (m_showGround && m_groundMesh) {
+            Mat4 groundWorld = mat4_identity();
+            Mat4 groundMVP = viewProj;
+            m_renderer->setUniformMat4(m_shader, "uMVP", groundMVP);
+            m_renderer->setUniformMat4(m_shader, "uWorld", groundWorld);
+            m_renderer->setUniformInt(m_shader, "uUseTexture", 0);
+            m_renderer->drawMesh(m_groundMesh, 0);
+        }
+        
+        // Apply auto-rotation if enabled
+        Mat4 RyAuto = m_autoRotate ? mat4_rotate_y(t * 0.3f) : mat4_identity();
         Mat4 Ry     = mat4_rotate_y(m_yaw);
         Mat4 Rx     = mat4_rotate_x(m_pitch);
         Mat4 world  = mat4_mul(RyAuto, mat4_mul(Ry, Rx));
@@ -574,16 +603,12 @@ void CubeApp::render() {
         m_renderer->setUniformMat4(m_shader, "uWorld", world);
         
         // Draw all meshes
+        if (m_meshes.empty()) {
+            LOG_DEBUG("No meshes to render!");
+        }
         for (size_t i = 0; i < m_meshes.size(); i++) {
             const auto& mesh = m_meshes[i];
             m_renderer->setUniformInt(m_shader, "uUseTexture", mesh.textureHandle ? 1 : 0);
-            
-            // DEBUG: Print mesh/texture info once
-            static bool debugOnce = false;
-            if (!debugOnce && m_debugMode) {
-                std::printf("Mesh %zu: meshHandle=%u, textureHandle=%u\n", 
-                           i, mesh.meshHandle, mesh.textureHandle);
-            }
             
             m_renderer->drawMesh(mesh.meshHandle, mesh.textureHandle);
             
@@ -591,10 +616,6 @@ void CubeApp::render() {
                 m_stats.drawCalls++;
                 m_stats.meshesDrawn++;
             }
-        }
-        static bool debugOnce = false;
-        if (!debugOnce && m_debugMode) {
-            debugOnce = true;
         }
     }
 
@@ -630,9 +651,9 @@ void CubeApp::onMouseButton(int button, int action, int mods) {
 }
 
 void CubeApp::onCursorPos(double x, double y) {
-    if (m_useSceneMode) {
-        // FPS camera look in scene mode - only when left button pressed
-        if (!m_dragging) return;  // Only look when dragging
+    if (m_cameraType == CAMERA_FPS) {
+        // FPS camera look - only when left button pressed
+        if (!m_dragging) return;
         
         if (m_firstMouse) {
             m_lastMouseX = x;
@@ -656,7 +677,7 @@ void CubeApp::onCursorPos(double x, double y) {
         return;
     }
     
-    // Single object mode: drag to rotate
+    // Orbit camera mode: drag to rotate
     if (!m_dragging) return;
 
     double dx = x - m_lastX;
@@ -703,23 +724,6 @@ void CubeApp::onKey(int key, int scancode, int action, int mods) {
     if (key == GLFW_KEY_SPACE) m_spacePressed = (action != GLFW_RELEASE);
     if (key == GLFW_KEY_LEFT_SHIFT || key == GLFW_KEY_RIGHT_SHIFT) 
         m_shiftPressed = (action != GLFW_RELEASE);
-    
-    // Toggle scene mode with 'T' key (changed from S to avoid conflict)
-    if (key == GLFW_KEY_T && action == GLFW_PRESS) {
-        m_useSceneMode = !m_useSceneMode;
-        
-        if (m_useSceneMode) {
-            LOG_INFO("Scene mode ENABLED - FPS camera controls");
-            LOG_INFO("WASD to move, Left-click + drag to look, Space/Shift for up/down");
-            LOG_INFO("Press 'B' to toggle background, 'G' to toggle ground");
-            
-            if (m_hasModel) {
-                createExampleScene();
-            }
-        } else {
-            LOG_INFO("Scene mode DISABLED - showing single object");
-        }
-    }
     
     // Toggle background with 'B' key
     if (key == GLFW_KEY_B && action == GLFW_PRESS) {
@@ -770,57 +774,6 @@ Mat4 CubeApp::createTransformMatrix(float x, float y, float z, float rotY, float
 }
 
 // Create example scene with 100 airplanes
-void CubeApp::createExampleScene() {
-    if (!m_hasModel) {
-        LOG_WARNING("Cannot create scene: no model loaded");
-        return;
-    }
-    
-    LOG_INFO("Creating example scene with 100 airplanes...");
-    
-    m_scene.clear();
-    
-    // Store model mesh/texture handles for scene rendering
-    m_modelMeshHandles[&m_model].clear();
-    m_modelTextureHandles[&m_model].clear();
-    
-    for (const auto& mesh : m_meshes) {
-        m_modelMeshHandles[&m_model].push_back(mesh.meshHandle);
-        m_modelTextureHandles[&m_model].push_back(mesh.textureHandle);
-    }
-    
-    // Create 10x10 grid of airplanes
-    const float spacing = 15.0f;
-    const float gridSize = 10;
-    const float offset = -(gridSize - 1) * spacing * 0.5f;
-    
-    for (int x = 0; x < gridSize; x++) {
-        for (int z = 0; z < gridSize; z++) {
-            SceneObject obj;
-            obj.model = &m_model;
-            
-            float posX = offset + x * spacing;
-            float posZ = offset + z * spacing;
-            float rotY = (x + z) * 0.2f;  // Vary rotation
-            
-            obj.transform = createTransformMatrix(posX, 0, posZ, rotY, 1.0f);
-            
-            // Color gradient across the grid
-            obj.colorTint = {
-                (float)x / (gridSize - 1),  // Red varies with X
-                (float)z / (gridSize - 1),  // Green varies with Z
-                0.8f,                        // Blue constant
-                1.0f                         // Full intensity
-            };
-            
-            obj.visible = true;
-            m_scene.addObject(obj);
-        }
-    }
-    
-    LOG_INFO("Scene created: %zu objects", m_scene.getObjectCount());
-}
-
 // Create ground plane - a grid to show spatial reference
 void CubeApp::createGroundPlane() {
     LOG_INFO("Creating ground plane...");
@@ -987,44 +940,54 @@ void CubeApp::updateFPSCamera(float deltaTime) {
 bool CubeApp::loadScene(const SceneFile& scene) {
     LOG_INFO("Applying scene: %s", scene.name.c_str());
     
-    // Apply camera position (FPS camera system)
-    m_cameraPos.x = scene.camera.position[0];
-    m_cameraPos.y = scene.camera.position[1];
-    m_cameraPos.z = scene.camera.position[2];
+    // Store the scene file for toggling with 'T' key
+    m_sceneFile = scene;
+    m_hasSceneFile = true;
     
-    // Calculate camera orientation from position and target
-    Vec3 target = {scene.camera.target[0], scene.camera.target[1], scene.camera.target[2]};
-    Vec3 direction = {
-        target.x - m_cameraPos.x,
-        target.y - m_cameraPos.y,
-        target.z - m_cameraPos.z
-    };
+    // Set camera type
+    m_cameraType = (scene.camera.type == SceneFileCamera::FPS) ? CAMERA_FPS : CAMERA_ORBIT;
+    LOG_DEBUG("Camera type: %s", (m_cameraType == CAMERA_FPS) ? "FPS" : "ORBIT");
     
-    // Calculate yaw and pitch from direction
-    float length = std::sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
-    if (length > 0.001f) {
-        direction.x /= length;
-        direction.y /= length;
-        direction.z /= length;
+    if (m_cameraType == CAMERA_FPS) {
+        // FPS camera setup
+        m_cameraPos.x = scene.camera.position[0];
+        m_cameraPos.y = scene.camera.position[1];
+        m_cameraPos.z = scene.camera.position[2];
         
-        m_cameraYaw = std::atan2(direction.x, direction.z) * 180.0f / 3.14159f;
-        m_cameraPitch = std::asin(direction.y) * 180.0f / 3.14159f;
+        // Calculate orientation from position and target
+        Vec3 target = {scene.camera.target[0], scene.camera.target[1], scene.camera.target[2]};
+        Vec3 direction = {
+            target.x - m_cameraPos.x,
+            target.y - m_cameraPos.y,
+            target.z - m_cameraPos.z
+        };
         
-        // Update camera vectors
-        m_cameraForward = direction;
-        m_cameraRight.x = std::sin((m_cameraYaw + 90.0f) * 3.14159f / 180.0f);
-        m_cameraRight.y = 0;
-        m_cameraRight.z = std::cos((m_cameraYaw + 90.0f) * 3.14159f / 180.0f);
-        m_cameraUp.x = 0;
-        m_cameraUp.y = 1;
-        m_cameraUp.z = 0;
+        // Calculate yaw and pitch (in RADIANS)
+        float length = std::sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
+        if (length > 0.001f) {
+            direction.x /= length;
+            direction.y /= length;
+            direction.z /= length;
+            
+            m_cameraYaw = std::atan2(direction.x, -direction.z);
+            m_cameraPitch = -std::asin(direction.y);
+            
+            // Update camera vectors
+            updateFPSCamera(0.0f);
+        }
+        
+        LOG_DEBUG("  FPS: pos(%.1f, %.1f, %.1f) yaw=%.2f pitch=%.2f",
+                 m_cameraPos.x, m_cameraPos.y, m_cameraPos.z, m_cameraYaw, m_cameraPitch);
+    } else {
+        // Orbit camera setup
+        m_distance = scene.camera.distance;
+        m_yaw = scene.camera.yaw;
+        m_pitch = scene.camera.pitch;
+        m_autoRotate = scene.camera.autoRotate;
+        
+        LOG_DEBUG("  ORBIT: distance=%.1f yaw=%.2f pitch=%.2f autoRotate=%s",
+                 m_distance, m_yaw, m_pitch, m_autoRotate ? "yes" : "no");
     }
-    
-    // Note: FOV is handled in projection matrix, not stored as member variable
-    
-    LOG_DEBUG("Camera: pos(%.1f, %.1f, %.1f) looking at(%.1f, %.1f, %.1f)",
-             m_cameraPos.x, m_cameraPos.y, m_cameraPos.z,
-             target.x, target.y, target.z);
     
     // Apply first light if available
     if (!scene.lights.empty()) {
@@ -1043,37 +1006,84 @@ bool CubeApp::loadScene(const SceneFile& scene) {
     LOG_DEBUG("Background: %s", m_useLightBackground ? "light" : "dark");
     
     // Load objects
-    // Note: For now, we only load the first object's model
-    // Multi-object scenes would require extending the app to support multiple models
     if (!scene.objects.empty()) {
-        for (size_t i = 0; i < scene.objects.size(); i++) {
-            const auto& obj = scene.objects[i];
-            if (!obj.visible) {
-                LOG_DEBUG("Object %zu (%s): skipped (not visible)", i, obj.name.c_str());
-                continue;
-            }
+        // Determine if we need scene system (multiple objects)
+        bool isMultiObject = scene.objects.size() > 1;
+        
+        if (isMultiObject) {
+            LOG_INFO("Multi-object scene: %zu objects", scene.objects.size());
             
-            LOG_DEBUG("Object %zu (%s): model=%s pos(%.1f,%.1f,%.1f) rot(%.1f,%.1f,%.1f) scale(%.1f,%.1f,%.1f)",
-                     i, obj.name.c_str(), obj.modelPath.c_str(),
-                     obj.position[0], obj.position[1], obj.position[2],
-                     obj.rotation[0], obj.rotation[1], obj.rotation[2],
-                     obj.scale[0], obj.scale[1], obj.scale[2]);
-            
-            // For first object, load the model if not already loaded
-            if (i == 0 && !m_hasModel && !obj.modelPath.empty()) {
-                if (loadModel(obj.modelPath.c_str())) {
-                    LOG_INFO("Loaded model from scene: %s", obj.modelPath.c_str());
-                    
-                    // TODO: Apply transform (position, rotation, scale) to the model
-                    // This would require storing per-object transforms in the app
-                } else {
-                    LOG_WARNING("Failed to load model: %s", obj.modelPath.c_str());
+            // Load the model from first object
+            if (!scene.objects[0].modelPath.empty()) {
+                LOG_INFO("Loading model: %s", scene.objects[0].modelPath.c_str());
+                if (!loadModel(scene.objects[0].modelPath.c_str())) {
+                    LOG_ERROR("Failed to load model: %s", scene.objects[0].modelPath.c_str());
+                    return false;
                 }
             }
+            
+            // Now populate Scene system with all objects
+            m_scene.clear();
+            
+            // Store model mesh/texture handles for scene rendering
+            m_modelMeshHandles[&m_model].clear();
+            m_modelTextureHandles[&m_model].clear();
+            
+            for (const auto& mesh : m_meshes) {
+                m_modelMeshHandles[&m_model].push_back(mesh.meshHandle);
+                m_modelTextureHandles[&m_model].push_back(mesh.textureHandle);
+            }
+            
+            // Add each scene file object to the Scene
+            for (size_t i = 0; i < scene.objects.size(); i++) {
+                const auto& sceneObj = scene.objects[i];
+                if (!sceneObj.visible) continue;
+                
+                SceneObject obj;
+                obj.model = &m_model;
+                
+                // Create transform matrix from position/rotation/scale
+                float rotY = sceneObj.rotation[1] * 3.14159f / 180.0f; // Yaw in radians
+                obj.transform = createTransformMatrix(
+                    sceneObj.position[0], 
+                    sceneObj.position[1], 
+                    sceneObj.position[2], 
+                    rotY, 
+                    sceneObj.scale[0]  // Uniform scale
+                );
+                
+                obj.colorTint = {1, 1, 1, 1}; // Default white tint
+                obj.visible = true;
+                
+                m_scene.addObject(obj);
+            }
+            
+            // Enable scene mode for multi-object rendering
+            m_useSceneMode = true;
+            LOG_INFO("Scene system populated: %zu objects", m_scene.getObjectCount());
+            
+        } else {
+            // Single object - just load to m_meshes
+            const auto& obj = scene.objects[0];
+            if (obj.visible && !obj.modelPath.empty()) {
+                LOG_INFO("Loading single model: %s", obj.modelPath.c_str());
+                if (loadModel(obj.modelPath.c_str())) {
+                    LOG_INFO("Model loaded successfully: %zu meshes", m_meshes.size());
+                } else {
+                    LOG_ERROR("Failed to load model: %s", obj.modelPath.c_str());
+                    return false;
+                }
+            }
+            
+            // Single object - scene mode OFF
+            m_useSceneMode = false;
         }
     }
     
-    LOG_INFO("Scene applied successfully");
+    LOG_INFO("Scene applied successfully (camera=%s, objects=%zu, scene_mode=%s)",
+             m_cameraType == CAMERA_FPS ? "FPS" : "ORBIT",
+             scene.objects.size(),
+             m_useSceneMode ? "yes" : "no");
     return true;
 }
 
