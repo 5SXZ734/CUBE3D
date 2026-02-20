@@ -2,17 +2,14 @@
 #include "app.h"
 #include "debug.h"
 #include "normal_map_gen.h"  // Procedural normal map generation
+#include "math_utils.h"
 #include <GLFW/glfw3.h>
 #include <cstdio>
 #include <cmath>
 #include <algorithm>
 
 // ==================== Math Utilities ====================
-static Mat4 mat4_identity() {
-    Mat4 r{};
-    r.m[0] = r.m[5] = r.m[10] = r.m[15] = 1.0f;
-    return r;
-}
+// Math functions are now in math_utils.h
 
 // SceneObject constructor implementation
 SceneObject::SceneObject()
@@ -21,73 +18,6 @@ SceneObject::SceneObject()
     , colorTint({1.0f, 1.0f, 1.0f, 1.0f})
     , visible(true)
 {}
-
-static Mat4 mat4_mul(const Mat4& a, const Mat4& b) {
-    Mat4 r{};
-    for (int c = 0; c < 4; ++c)
-    for (int row = 0; row < 4; ++row) {
-        r.m[c*4 + row] =
-            a.m[0*4 + row] * b.m[c*4 + 0] +
-            a.m[1*4 + row] * b.m[c*4 + 1] +
-            a.m[2*4 + row] * b.m[c*4 + 2] +
-            a.m[3*4 + row] * b.m[c*4 + 3];
-    }
-    return r;
-}
-
-static Mat4 mat4_rotate_x(float a) {
-    Mat4 r = mat4_identity();
-    float c = std::cos(a), s = std::sin(a);
-    r.m[5] = c;  r.m[9]  = -s;
-    r.m[6] = s;  r.m[10] =  c;
-    return r;
-}
-
-static Mat4 mat4_rotate_y(float a) {
-    Mat4 r = mat4_identity();
-    float c = std::cos(a), s = std::sin(a);
-    r.m[0] =  c; r.m[8] = s;
-    r.m[2] = -s; r.m[10] = c;
-    return r;
-}
-
-static Vec3 v3_sub(Vec3 a, Vec3 b) { return {a.x-b.x, a.y-b.y, a.z-b.z}; }
-static float v3_dot(Vec3 a, Vec3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
-static Vec3 v3_cross(Vec3 a, Vec3 b) {
-    return { a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x };
-}
-static Vec3 v3_norm(Vec3 v) {
-    float len = std::sqrt(std::max(1e-20f, v3_dot(v,v)));
-    return { v.x/len, v.y/len, v.z/len };
-}
-
-static Mat4 mat4_lookAtRH(Vec3 eye, Vec3 center, Vec3 up) {
-    Vec3 f = v3_norm(v3_sub(center, eye));
-    Vec3 s = v3_norm(v3_cross(f, up));
-    Vec3 u = v3_cross(s, f);
-
-    Mat4 r = mat4_identity();
-    r.m[0] = s.x; r.m[4] = s.y; r.m[8]  = s.z;
-    r.m[1] = u.x; r.m[5] = u.y; r.m[9]  = u.z;
-    r.m[2] =-f.x; r.m[6] =-f.y; r.m[10] =-f.z;
-
-    r.m[12] = -v3_dot(s, eye);
-    r.m[13] = -v3_dot(u, eye);
-    r.m[14] =  v3_dot(f, eye);
-    return r;
-}
-
-static Mat4 mat4_perspectiveRH_NO(float fovyRadians, float aspect, float zNear, float zFar) {
-    float f = 1.0f / std::tan(fovyRadians * 0.5f);
-
-    Mat4 r{};
-    r.m[0]  = f / aspect;
-    r.m[5]  = f;
-    r.m[10] = (zFar + zNear) / (zNear - zFar);
-    r.m[11] = -1.0f;
-    r.m[14] = (2.0f * zFar * zNear) / (zNear - zFar);
-    return r;
-}
 
 // ==================== GLFW Callbacks (static wrappers) ====================
 static void glfw_framebuffer_size_callback(GLFWwindow* win, int w, int h) {
@@ -123,10 +53,20 @@ CubeApp::CubeApp()
     , m_renderer(nullptr)
     , m_shader(0)
     , m_hasModel(false)
+    , m_objectPosition({0, 0, 0})
+    , m_objectRotation({0, 0, 0})
+    , m_objectScale({1, 1, 1})
     , m_useSceneMode(false)
     , m_useLightBackground(false)
     , m_cameraType(CAMERA_ORBIT)  // Default to orbit camera
     , m_autoRotate(true)  // Default to auto-rotate
+    , m_flightMode(false)
+    , m_arrowUpPressed(false)
+    , m_arrowDownPressed(false)
+    , m_arrowLeftPressed(false)
+    , m_arrowRightPressed(false)
+    , m_deletePressed(false)
+    , m_pageDownPressed(false)
     , m_dragging(false)
     , m_lastX(0.0)
     , m_lastY(0.0)
@@ -349,8 +289,31 @@ void CubeApp::run() {
 }
 
 void CubeApp::update(float deltaTime) {
-    (void)deltaTime;  // Unused currently
-    // Application logic updates go here
+    // Update flight dynamics if in flight mode
+    if (m_flightMode) {
+        // Gather control inputs from key states
+        ControlInputs& controls = m_flightDynamics.getControlInputs();
+        
+        // Pitch: Arrow Up = pitch down (-), Arrow Down = pitch up (+)
+        controls.elevator = 0;
+        if (m_arrowUpPressed) controls.elevator -= 1.0f;
+        if (m_arrowDownPressed) controls.elevator += 1.0f;
+        
+        // Roll: Arrow Left = roll left (-), Arrow Right = roll right (+)
+        controls.aileron = 0;
+        if (m_arrowLeftPressed) controls.aileron -= 1.0f;
+        if (m_arrowRightPressed) controls.aileron += 1.0f;
+        
+        // Rudder: Delete = yaw left (-), Page Down = yaw right (+)
+        controls.rudder = 0;
+        if (m_deletePressed) controls.rudder -= 1.0f;
+        if (m_pageDownPressed) controls.rudder += 1.0f;
+        
+        // Throttle is adjusted with +/- keys (handled in onKey)
+        
+        // Update physics
+        m_flightDynamics.update(deltaTime);
+    }
 }
 
 bool CubeApp::loadModel(const char* path) {
@@ -557,8 +520,23 @@ void CubeApp::render() {
                 m_stats.meshesDrawn = sceneStats.instancesDrawn;
             }
         } else {
-            // Render single object from m_meshes at origin
-            Mat4 world = mat4_identity();
+            // Render single object from m_meshes with transform
+            Mat4 world;
+            
+            if (m_flightMode) {
+                // Use flight dynamics transform
+                world = m_flightDynamics.getTransformMatrix();
+            } else {
+                // Use scene file transform
+                Mat4 translation = mat4_translate(m_objectPosition.x, m_objectPosition.y, m_objectPosition.z);
+                Mat4 rotYaw = mat4_rotate_y(m_objectRotation.y * 3.14159f / 180.0f);
+                Mat4 rotPitch = mat4_rotate_x(m_objectRotation.x * 3.14159f / 180.0f);
+                Mat4 rotRoll = mat4_rotate_z(m_objectRotation.z * 3.14159f / 180.0f);
+                Mat4 scale = mat4_scale(m_objectScale.x, m_objectScale.y, m_objectScale.z);
+                
+                world = mat4_mul(translation, mat4_mul(rotYaw, mat4_mul(rotPitch, mat4_mul(rotRoll, scale))));
+            }
+            
             Mat4 mvp = mat4_mul(viewProj, world);
             
             m_renderer->setUniformMat4(m_shader, "uMVP", mvp);
@@ -595,7 +573,15 @@ void CubeApp::render() {
         Mat4 RyAuto = m_autoRotate ? mat4_rotate_y(t * 0.3f) : mat4_identity();
         Mat4 Ry     = mat4_rotate_y(m_yaw);
         Mat4 Rx     = mat4_rotate_x(m_pitch);
-        Mat4 world  = mat4_mul(RyAuto, mat4_mul(Ry, Rx));
+        
+        // Apply object transform from scene file
+        Mat4 translation = mat4_translate(m_objectPosition.x, m_objectPosition.y, m_objectPosition.z);
+        Mat4 rotYaw = mat4_rotate_y(m_objectRotation.y * 3.14159f / 180.0f);
+        Mat4 rotPitch = mat4_rotate_x(m_objectRotation.x * 3.14159f / 180.0f);
+        Mat4 rotRoll = mat4_rotate_z(m_objectRotation.z * 3.14159f / 180.0f);
+        
+        // Combine: translation * scene_rotation * user_rotation * auto_rotation
+        Mat4 world = mat4_mul(translation, mat4_mul(rotYaw, mat4_mul(rotPitch, mat4_mul(rotRoll, mat4_mul(RyAuto, mat4_mul(Ry, Rx))))));
         
         Mat4 mvp = mat4_mul(proj, mat4_mul(view, world));
         
@@ -724,6 +710,42 @@ void CubeApp::onKey(int key, int scancode, int action, int mods) {
     if (key == GLFW_KEY_SPACE) m_spacePressed = (action != GLFW_RELEASE);
     if (key == GLFW_KEY_LEFT_SHIFT || key == GLFW_KEY_RIGHT_SHIFT) 
         m_shiftPressed = (action != GLFW_RELEASE);
+    
+    // Flight controls (arrow keys + Delete/PageDown for rudder)
+    if (key == GLFW_KEY_UP) m_arrowUpPressed = (action != GLFW_RELEASE);          // Pitch down
+    if (key == GLFW_KEY_DOWN) m_arrowDownPressed = (action != GLFW_RELEASE);      // Pitch up
+    if (key == GLFW_KEY_LEFT) m_arrowLeftPressed = (action != GLFW_RELEASE);      // Roll left
+    if (key == GLFW_KEY_RIGHT) m_arrowRightPressed = (action != GLFW_RELEASE);    // Roll right
+    if (key == GLFW_KEY_DELETE) m_deletePressed = (action != GLFW_RELEASE);       // Rudder left
+    if (key == GLFW_KEY_PAGE_DOWN) m_pageDownPressed = (action != GLFW_RELEASE);  // Rudder right
+    
+    // Toggle flight mode with 'F' key
+    if (key == GLFW_KEY_F && action == GLFW_PRESS) {
+        m_flightMode = !m_flightMode;
+        LOG_INFO("Flight mode: %s", m_flightMode ? "ENABLED" : "DISABLED");
+        
+        if (m_flightMode) {
+            // Initialize flight dynamics at current position or default
+            Vec3 startPos = m_hasModel ? Vec3{0, 100, 0} : Vec3{0, 100, 0};
+            m_flightDynamics.initialize(startPos, 0.0f);
+            m_cameraType = CAMERA_CHASE;  // Switch to chase camera
+            LOG_INFO("Flight controls: Arrows=pitch/roll, Del/PgDn=rudder, +/-=throttle");
+        }
+    }
+    
+    // Throttle controls (when in flight mode)
+    if (m_flightMode) {
+        if (key == GLFW_KEY_EQUAL && action == GLFW_PRESS) {  // + key
+            float& throttle = m_flightDynamics.getControlInputs().throttle;
+            throttle = std::min(1.0f, throttle + 0.1f);
+            LOG_INFO("Throttle: %.0f%%", throttle * 100);
+        }
+        if (key == GLFW_KEY_MINUS && action == GLFW_PRESS) {  // - key
+            float& throttle = m_flightDynamics.getControlInputs().throttle;
+            throttle = std::max(0.0f, throttle - 0.1f);
+            LOG_INFO("Throttle: %.0f%%", throttle * 100);
+        }
+    }
     
     // Toggle background with 'B' key
     if (key == GLFW_KEY_B && action == GLFW_PRESS) {
@@ -1069,6 +1091,15 @@ bool CubeApp::loadScene(const SceneFile& scene) {
                 LOG_INFO("Loading single model: %s", obj.modelPath.c_str());
                 if (loadModel(obj.modelPath.c_str())) {
                     LOG_INFO("Model loaded successfully: %zu meshes", m_meshes.size());
+                    
+                    // Store object transform from scene file
+                    m_objectPosition = {obj.position[0], obj.position[1], obj.position[2]};
+                    m_objectRotation = {obj.rotation[0], obj.rotation[1], obj.rotation[2]};
+                    m_objectScale = {obj.scale[0], obj.scale[1], obj.scale[2]};
+                    
+                    LOG_DEBUG("Object transform: pos(%.1f, %.1f, %.1f) rot(%.1f, %.1f, %.1f)",
+                             m_objectPosition.x, m_objectPosition.y, m_objectPosition.z,
+                             m_objectRotation.x, m_objectRotation.y, m_objectRotation.z);
                 } else {
                     LOG_ERROR("Failed to load model: %s", obj.modelPath.c_str());
                     return false;

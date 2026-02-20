@@ -8,6 +8,7 @@
 #include "texture_cache.h"
 #include "scene.h"
 #include "scene_loader.h"
+#include "flight_dynamics.h"
 #include <vector>
 
 // Forward declarations
@@ -75,6 +76,11 @@ private:
     Model m_model;
     bool m_hasModel;
     
+    // Single object transform (from scene file)
+    Vec3 m_objectPosition;
+    Vec3 m_objectRotation;  // Euler angles in degrees
+    Vec3 m_objectScale;
+    
     // Scene system for multiple objects
     Scene m_scene;
     bool m_useSceneMode;  // Toggle between single object and scene mode
@@ -95,9 +101,20 @@ private:
     bool m_useNormalMapping;
 
     // Camera/input state (orbit camera mode)
-    enum CameraType { CAMERA_FPS, CAMERA_ORBIT };
+    enum CameraType { CAMERA_FPS, CAMERA_ORBIT, CAMERA_CHASE };
     CameraType m_cameraType;
     bool m_autoRotate;
+    
+    // Flight simulation
+    bool m_flightMode;              // Is flight simulation active?
+    FlightDynamics m_flightDynamics;
+    bool m_arrowUpPressed;
+    bool m_arrowDownPressed;
+    bool m_arrowLeftPressed;
+    bool m_arrowRightPressed;
+    bool m_deletePressed;           // Rudder left (Delete key)
+    bool m_pageDownPressed;         // Rudder right (Page Down key)
+    
     bool m_dragging;
     double m_lastX;
     double m_lastY;

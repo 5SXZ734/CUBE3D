@@ -3,22 +3,10 @@
 #define RENDERER_H
 
 #include <cstdint>
+#include "math_utils.h"
 
 // Forward declarations for platform types
 struct GLFWwindow;
-
-// ==================== Math Structures ====================
-struct Vec3 {
-    float x, y, z;
-};
-
-struct Vec4 {
-    float x, y, z, w;
-};
-
-struct Mat4 {
-    float m[16]; // column-major
-};
 
 // ==================== Instance Data ====================
 struct InstanceData {

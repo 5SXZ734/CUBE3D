@@ -12,8 +12,11 @@ set(SOURCES
   app.h
   dds_loader.h
   debug.h
+  flight_dynamics.cpp
+  flight_dynamics.h
   renderer_opengl.cpp
   renderer.h
+  math_utils.h
   model_assimp.cpp
   model.h
   normal_map_gen.h
