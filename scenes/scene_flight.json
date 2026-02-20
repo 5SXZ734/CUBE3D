@@ -1,0 +1,45 @@
+{
+  "name": "Flight Simulation - Player Controlled",
+  "camera": {
+    "type": "fps",
+    "position": [0, 52, 100],
+    "target": [0, 50, 90],
+    "fov": 75,
+    "nearPlane": 0.1,
+    "farPlane": 10000
+  },
+  "lights": [
+    {
+      "type": "directional",
+      "direction": [-0.3, -1.0, -0.2],
+      "color": [1.0, 1.0, 0.95],
+      "intensity": 1.0
+    }
+  ],
+  "objects": [
+    {
+      "name": "PlayerAircraft",
+      "model": "models/L-39.X",
+      "position": [0, 50, 90],
+      "rotation": [0, 0, 0],
+      "scale": [1, 1, 1],
+      "visible": true
+    }
+  ],
+  "ground": {
+    "enabled": true,
+    "size": 5000,
+    "color": [0.3, 0.4, 0.3, 1.0],
+    "texturePath": "models/surf.bmp",
+    "hasRunway": true,
+    "runwayWidth": 50,
+    "runwayLength": 1000,
+    "runwayColor": [0.5, 0.5, 0.5, 1.0],
+    "runwayTexturePath": "models/strip.bmp"
+  },
+  "background": {
+    "enabled": true,
+    "colorTop": [0.4, 0.6, 1.0],
+    "colorBottom": [0.7, 0.85, 1.0]
+  }
+}
