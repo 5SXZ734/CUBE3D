@@ -4,6 +4,7 @@
 #include "scene_loader.h"
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 void printUsage(const char* programName) {
     printf("Usage: %s [options] [model.x]\n", programName);
@@ -12,7 +13,7 @@ void printUsage(const char* programName) {
     printf("  d3d11, dx11    Use Direct3D 11\n");
     printf("  d3d12, dx12    Use Direct3D 12\n");
     printf("\nScene Options:\n");
-    printf("  --scene FILE   Load scene from JSON file\n");
+    printf("  --scene FILE   Load scene from JSON file (.json extension optional)\n");
     printf("\nDebug Options:\n");
     printf("  --debug        Enable debug output\n");
     printf("  --verbose      Enable verbose logging (implies --debug)\n");
@@ -21,7 +22,8 @@ void printUsage(const char* programName) {
     printf("  --validate     Enable strict validation checks\n");
     printf("\nExamples:\n");
     printf("  %s opengl airplane.x\n", programName);
-    printf("  %s --scene example_scene.json d3d12\n", programName);
+    printf("  %s --scene example_scene d3d12\n", programName);
+    printf("  %s --scene scene_orbit.json opengl\n", programName);
     printf("  %s --debug d3d12 model.x\n", programName);
     printf("  %s --verbose --stats opengl\n", programName);
     printf("\n");
@@ -125,18 +127,26 @@ int main(int argc, char** argv) {
     SceneFile scene;
     bool hasScene = false;
     if (sceneFile) {
-        LOG_INFO("Loading scene: %s", sceneFile);
+        // Add .json extension if not present
+        std::string sceneFilePath = sceneFile;
+        if (sceneFilePath.length() < 5 || 
+            sceneFilePath.substr(sceneFilePath.length() - 5) != ".json") {
+            sceneFilePath += ".json";
+            LOG_DEBUG("Appending .json extension: %s", sceneFilePath.c_str());
+        }
+        
+        LOG_INFO("Loading scene: %s", sceneFilePath.c_str());
         
         // Validate scene file exists
         if (strictValidation || debugMode) {
-            if (!FileValidator::validateTexturePath(sceneFile)) {  // Reuse texture validator for JSON
+            if (!FileValidator::validateTexturePath(sceneFilePath.c_str())) {  // Reuse texture validator for JSON
                 LOG_ERROR("Scene file validation failed, aborting");
                 DebugManager::shutdown();
                 return 1;
             }
         }
         
-        if (SceneLoader::loadScene(sceneFile, scene)) {
+        if (SceneLoader::loadScene(sceneFilePath.c_str(), scene)) {
             LOG_INFO("Scene loaded: %zu objects, %zu lights", scene.objects.size(), scene.lights.size());
             hasScene = true;
             
