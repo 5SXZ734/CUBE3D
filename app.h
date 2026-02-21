@@ -9,6 +9,8 @@
 #include "scene.h"
 #include "scene_loader.h"
 #include "flight_dynamics.h"
+#include "osd.h"
+#include "text_renderer.h"
 #include <vector>
 
 // Forward declarations
@@ -158,6 +160,10 @@ private:
     bool m_strictValidation;
     bool m_showStats;
     PerformanceStats m_stats;
+    
+    // On-Screen Display
+    FlightOSD m_osd;
+    ITextRenderer* m_textRenderer;
 };
 
 #endif // APP_H

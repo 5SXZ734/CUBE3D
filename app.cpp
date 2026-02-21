@@ -3,6 +3,7 @@
 #include "debug.h"
 #include "normal_map_gen.h"  // Procedural normal map generation
 #include "math_utils.h"
+#include "text_renderer_gl.h"  // OpenGL text renderer
 #include <GLFW/glfw3.h>
 #include <cstdio>
 #include <cmath>
@@ -108,6 +109,7 @@ CubeApp::CubeApp()
     , m_proceduralNormalMap(0)
     , m_useNormalMapping(false)
     , m_hasSceneFile(false)
+    , m_textRenderer(nullptr)
 {}
 
 CubeApp::~CubeApp() {
@@ -181,6 +183,35 @@ bool CubeApp::initialize(RendererAPI api, const char* modelPath) {
     // Initialize texture cache with renderer
     m_textureCache.setRenderer(m_renderer);
     LOG_DEBUG("Texture cache initialized");
+    
+    // Initialize text renderer for OSD
+    // Note: Uses OpenGL directly via GLAD - works alongside D3D11/D3D12 for overlay
+    printf("=== TEXT RENDERER INITIALIZATION ===\n");
+    printf("Renderer API: %d (OpenGL=%d, D3D11=%d, D3D12=%d)\n", 
+           (int)api, (int)RendererAPI::OpenGL, (int)RendererAPI::Direct3D11, (int)RendererAPI::Direct3D12);
+    
+    printf("Creating GLTextRenderer...\n");
+    m_textRenderer = new GLTextRenderer();
+    printf("GLTextRenderer created at: %p\n", (void*)m_textRenderer);
+    
+    if (m_textRenderer) {
+        printf("Calling initialize()...\n");
+        bool initResult = m_textRenderer->initialize();
+        printf("Initialize returned: %d\n", initResult);
+        
+        if (initResult) {
+            LOG_INFO("Text renderer initialized successfully");
+        } else {
+            LOG_ERROR("Text renderer initialize() returned false");
+            delete m_textRenderer;
+            m_textRenderer = nullptr;
+        }
+    } else {
+        LOG_ERROR("Failed to allocate GLTextRenderer");
+    }
+    
+    printf("Text renderer final state: %p\n", (void*)m_textRenderer);
+    printf("=== END TEXT RENDERER INITIALIZATION ===\n");
 
     // Set initial viewport
     int fbW, fbH;
@@ -255,10 +286,25 @@ bool CubeApp::initialize(RendererAPI api, const char* modelPath) {
     if (m_hasModel) {
         LOG_INFO("Loaded model with %zu meshes", m_meshes.size());
     }
+    
+    // Log OSD availability
+    if (m_textRenderer) {
+        LOG_INFO("OSD system ready - Press O to toggle, I for detailed mode");
+    } else {
+        LOG_WARNING("OSD not available - text renderer failed to initialize");
+    }
+    
     return true;
 }
 
 void CubeApp::shutdown() {
+    // Cleanup text renderer
+    if (m_textRenderer) {
+        m_textRenderer->shutdown();
+        delete m_textRenderer;
+        m_textRenderer = nullptr;
+    }
+    
     if (m_renderer) {
         // Destroy all meshes and textures
         for (auto& mesh : m_meshes) {
@@ -653,6 +699,59 @@ void CubeApp::render() {
             }
         }
     }
+    
+    // ==================== RENDER OSD ====================
+    static bool osd_debug_once = true;
+    if (osd_debug_once && m_osd.isEnabled()) {
+        printf("OSD RENDER CHECK: enabled=%d, textRenderer=%p, flightMode=%d\n", 
+               m_osd.isEnabled(), (void*)m_textRenderer, m_flightMode);
+        osd_debug_once = false;
+    }
+    
+    if (m_osd.isEnabled() && m_textRenderer) {
+        printf("OSD: Rendering! Flight mode: %d\n", m_flightMode);
+        
+        if (m_flightMode) {
+            // Show flight data
+            const AircraftState& state = m_flightDynamics.getState();
+            const ControlInputs& controls = m_flightDynamics.getControlInputs();
+            
+            auto osdLines = m_osd.generateOSDLines(state, controls);
+            
+            // Render text overlay
+            m_textRenderer->beginText(m_width, m_height);
+            
+            float y = 0.02f;  // Start near top
+            float lineHeight = 0.04f;  // Increased spacing
+            
+            for (const auto& line : osdLines) {
+                // Different colors based on content
+                TextColor color = TextColor::Green();
+                
+                if (line.find("===") != std::string::npos || line.find("---") != std::string::npos) {
+                    color = TextColor::Cyan();  // Section headers
+                } else if (line.find("CLIMBING") != std::string::npos) {
+                    color = TextColor::Green();
+                } else if (line.find("DESCENDING") != std::string::npos) {
+                    color = TextColor::Yellow();
+                }
+                
+                m_textRenderer->renderText(line.c_str(), {0.02f, y}, color, 2.5f);  // 2.5x scale
+                y += lineHeight;
+            }
+            
+            m_textRenderer->endText();
+        } else {
+            // Show message to enable flight mode
+            printf("OSD: Showing enable flight mode message\n");
+            m_textRenderer->beginText(m_width, m_height);
+            m_textRenderer->renderText("OSD ENABLED - Press F to enable flight mode", {0.02f, 0.02f}, TextColor::Yellow(), 3.0f);
+            m_textRenderer->renderText("Press O to toggle OSD, I for detailed mode", {0.02f, 0.08f}, TextColor::Cyan(), 3.0f);
+            m_textRenderer->endText();
+        }
+    } else if (m_osd.isEnabled() && !m_textRenderer) {
+        printf("OSD: ERROR - OSD enabled but text renderer is NULL!\n");
+    }
 
     m_renderer->endFrame();
 }
@@ -788,7 +887,7 @@ void CubeApp::onKey(int key, int scancode, int action, int mods) {
             m_chaseCameraTarget = startPos;
             
             LOG_INFO("Flight initialized at (%.1f, %.1f, %.1f)", startPos.x, startPos.y, startPos.z);
-            LOG_INFO("Flight controls: Arrows=pitch/roll, Del/PgDn=rudder, +/-=throttle");
+            LOG_INFO("Flight controls: Arrows=pitch/roll, Del/PgDn=rudder, +/-=throttle, O=OSD, I=detailed");
         } else {
             // Restore to FPS camera mode - don't change camera type
             LOG_INFO("Flight mode disabled - FPS camera restored");
@@ -825,6 +924,25 @@ void CubeApp::onKey(int key, int scancode, int action, int mods) {
     if (key == GLFW_KEY_N && action == GLFW_PRESS) {
         m_useNormalMapping = !m_useNormalMapping;
         LOG_INFO("Normal mapping: %s", m_useNormalMapping ? "ENABLED" : "DISABLED");
+    }
+    
+    // Toggle OSD with 'O' key
+    if (key == GLFW_KEY_O && action == GLFW_PRESS) {
+        printf("O key pressed! OSD state before: %d\n", m_osd.isEnabled());
+        m_osd.toggle();
+        printf("OSD state after: %d\n", m_osd.isEnabled());
+        LOG_INFO("OSD: %s (Flight mode: %s, Text renderer: %s)", 
+                 m_osd.isEnabled() ? "ENABLED" : "DISABLED",
+                 m_flightMode ? "ON" : "OFF",
+                 m_textRenderer ? "OK" : "NULL");
+    }
+    
+    // Toggle OSD detailed mode with 'I' key
+    if (key == GLFW_KEY_I && action == GLFW_PRESS) {
+        printf("I key pressed! Detailed mode before: %d\n", m_osd.isDetailedMode());
+        m_osd.toggleDetailedMode();
+        printf("Detailed mode after: %d\n", m_osd.isDetailedMode());
+        LOG_INFO("OSD mode: %s", m_osd.isDetailedMode() ? "DETAILED" : "SIMPLE");
     }
 }
 

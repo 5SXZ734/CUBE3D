@@ -25,6 +25,8 @@ set(SOURCES
   scene_loader.h
   stb_image_impl.cpp
   texture_cache.h
+  text_renderer_gl.cpp
+  text_renderer_gl.h
 )
 
 if(WIN32)
