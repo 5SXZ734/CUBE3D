@@ -991,9 +991,112 @@ bool CubeApp::reloadScene() {
     
     // Reload scene file
     SceneConfigV2 scene;
-    if (SceneLoaderV2::loadScene(m_sceneFilePath.c_str(), scene)) {
-        return SceneLoaderV2::applyScene(scene, m_modelRegistry, m_entityRegistry);
+    if (!SceneLoaderV2::loadScene(m_sceneFilePath.c_str(), scene)) {
+        LOG_ERROR("Failed to reload scene file");
+        return false;
     }
     
-    return false;
+    // Apply scene to registries
+    if (!SceneLoaderV2::applyScene(scene, m_modelRegistry, m_entityRegistry)) {
+        LOG_ERROR("Failed to apply scene");
+        return false;
+    }
+    
+    // Create mesh/texture handles for all models
+    for (const auto& [key, filepath] : scene.models) {
+        const Model* model = m_modelRegistry.getModel(key);
+        if (model) {
+            createModelRenderData(model);
+        }
+    }
+    
+    // Create cameras from scene
+    for (const auto& camConfig : scene.cameras) {
+        CameraEntity* camera = m_entityRegistry.createCameraEntity(camConfig.name);
+        camera->setPosition(camConfig.position);
+        camera->setFOV(camConfig.fov);
+        
+        // Find target entity
+        EntityID targetID = 0;
+        if (!camConfig.targetEntity.empty()) {
+            Entity* target = m_entityRegistry.findEntityByName(camConfig.targetEntity);
+            if (target) {
+                targetID = target->getID();
+            }
+        }
+        
+        // Attach camera behavior
+        if (camConfig.type == "chase" && targetID != 0) {
+            auto* behavior = new ChaseCameraTargetBehavior(&m_entityRegistry, targetID);
+            if (camConfig.behaviorParams.contains("distance"))
+                behavior->setDistance(camConfig.behaviorParams["distance"].get<float>());
+            if (camConfig.behaviorParams.contains("height"))
+                behavior->setHeight(camConfig.behaviorParams["height"].get<float>());
+            if (camConfig.behaviorParams.contains("smoothness"))
+                behavior->setSmoothness(camConfig.behaviorParams["smoothness"].get<float>());
+            
+            behavior->attach(camera);
+            behavior->initialize();
+            m_entityRegistry.addBehaviorManual(camera->getID(), behavior);
+            
+        } else if (camConfig.type == "orbit" && targetID != 0) {
+            auto* behavior = new OrbitCameraTargetBehavior(&m_entityRegistry, targetID);
+            if (camConfig.behaviorParams.contains("distance"))
+                behavior->setDistance(camConfig.behaviorParams["distance"].get<float>());
+            if (camConfig.behaviorParams.contains("yaw"))
+                behavior->setYaw(camConfig.behaviorParams["yaw"].get<float>());
+            if (camConfig.behaviorParams.contains("pitch"))
+                behavior->setPitch(camConfig.behaviorParams["pitch"].get<float>());
+            if (camConfig.behaviorParams.contains("autoRotate"))
+                behavior->setAutoRotate(camConfig.behaviorParams["autoRotate"].get<bool>());
+            if (camConfig.behaviorParams.contains("rotationSpeed"))
+                behavior->setRotationSpeed(camConfig.behaviorParams["rotationSpeed"].get<float>());
+            
+            behavior->attach(camera);
+            behavior->initialize();
+            m_entityRegistry.addBehaviorManual(camera->getID(), behavior);
+            
+        } else if (camConfig.type == "stationary") {
+            camera->setTarget(camConfig.target);
+        }
+        
+        m_sceneManager->addCamera(camera->getID());
+    }
+    
+    // Register controllable entities
+    for (const auto& entityConfig : scene.entities) {
+        if (entityConfig.controllable) {
+            Entity* entity = m_entityRegistry.findEntityByName(entityConfig.name);
+            if (entity) {
+                m_sceneManager->addControllable(entity->getID());
+            }
+        }
+    }
+    
+    // Create input controller
+    if (m_sceneManager->getCurrentControllable()) {
+        auto* controller = new AircraftInputController(&m_entityRegistry);
+        m_sceneManager->setInputController(controller);
+    }
+    
+    // Initialize camera
+    CameraEntity* activeCamera = m_sceneManager->getActiveCamera();
+    if (activeCamera) {
+        m_cameraPos = activeCamera->getPosition();
+        m_cameraTarget = activeCamera->getTarget();
+    }
+    
+    // Create ground if specified
+    if (scene.ground.enabled) {
+        createGroundPlane(scene.ground);
+    }
+    
+    // Setup lighting
+    if (!scene.lights.empty()) {
+        m_environment.lightDirection = scene.lights[0].direction;
+        m_environment.lightColor = scene.lights[0].color;
+    }
+    
+    LOG_INFO("Scene reloaded successfully");
+    return true;
 }
