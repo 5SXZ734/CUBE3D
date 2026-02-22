@@ -1,13 +1,36 @@
 {
-  "name": "Flight Simulation - Player Controlled",
+  "name": "Flight Simulation - Entity System",
+  
+  "models": {
+    "L-39": "models/L-39.X",
+    "Cessna172": "models/Cessna172.X"
+  },
+  
   "camera": {
-    "type": "fps",
+    "type": "chase",
     "position": [0, 52, 100],
     "target": [0, 50, 90],
-    "fov": 75,
-    "nearPlane": 0.1,
-    "farPlane": 10000
+    "fov": 75
   },
+  
+  "entities": [
+    {
+      "name": "PlayerAircraft",
+      "model": "L-39",
+      "position": [0, 150, 500],
+      "rotation": [0, 0, 0],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "behaviors": ["FlightDynamics", "ChaseCamera"],
+      "behaviorParams": {
+        "userControlled": true,
+        "cameraDistance": 25.0,
+        "cameraHeight": 8.0,
+        "cameraSmoothness": 0.92
+      }
+    }
+  ],
+  
   "lights": [
     {
       "type": "directional",
@@ -16,16 +39,7 @@
       "intensity": 1.0
     }
   ],
-  "objects": [
-    {
-      "name": "PlayerAircraft",
-      "model": "models/L-39.X",
-      "position": [0, 50, 90],
-      "rotation": [0, 0, 0],
-      "scale": [1, 1, 1],
-      "visible": true
-    }
-  ],
+  
   "ground": {
     "enabled": true,
     "size": 5000,
@@ -37,6 +51,7 @@
     "runwayColor": [0.5, 0.5, 0.5, 1.0],
     "runwayTexturePath": "models/strip.bmp"
   },
+  
   "background": {
     "enabled": true,
     "colorTop": [0.4, 0.6, 1.0],

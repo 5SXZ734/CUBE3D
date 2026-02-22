@@ -1,5 +1,5 @@
-// app_v2.cpp - Complete application implementation with ECS
-#include "app_v2.h"
+// app_v3.cpp - Complete application implementation with ECS
+#include "app_v3.h"
 #include "scene_loader_v2.h"
 #include "flight_dynamics_behavior.h"
 #include "chase_camera_behavior.h"
@@ -73,6 +73,9 @@ CubeApp::CubeApp()
     
     m_cameraPos = {0, 20, 80};
     m_cameraTarget = {0, 0, 0};
+    
+    // Create scene manager
+    m_sceneManager = new SceneManager(m_entityRegistry, m_modelRegistry);
     
     m_orbitDistance = 10.0f;
     m_orbitYaw = 0.6f;
@@ -233,40 +236,98 @@ bool CubeApp::initialize(RendererAPI api, const char* sceneFile) {
                     }
                 }
                 
-                // Setup camera from scene
-                if (scene.cameraType == "chase") {
-                    LOG_INFO("Using chase camera mode");
-                    printf("DEBUG: Chase camera mode active\n");
-                    m_orbitMode = false;
-                } else if (scene.cameraType == "orbit") {
-                    LOG_INFO("Using orbit camera mode");
-                    m_cameraTarget = scene.cameraTarget;
+                // Store scene file for reloading
+                m_sceneFilePath = sceneFile;
+                m_sceneManager->setSceneFilePath(sceneFile);
+                
+                // Create cameras from scene
+                printf("DEBUG: Creating cameras from scene...\n");
+                for (const auto& camConfig : scene.cameras) {
+                    CameraEntity* camera = m_entityRegistry.createCameraEntity(camConfig.name);
+                    camera->setPosition(camConfig.position);
+                    camera->setFOV(camConfig.fov);
                     
-                    // Calculate orbit parameters from position
-                    Vec3 offset;
-                    offset.x = scene.cameraPosition.x - m_cameraTarget.x;
-                    offset.y = scene.cameraPosition.y - m_cameraTarget.y;
-                    offset.z = scene.cameraPosition.z - m_cameraTarget.z;
+                    // Find target entity
+                    EntityID targetID = 0;
+                    if (!camConfig.targetEntity.empty()) {
+                        Entity* target = m_entityRegistry.findEntityByName(camConfig.targetEntity);
+                        if (target) {
+                            targetID = target->getID();
+                            printf("DEBUG: Camera '%s' targets entity '%s' (ID: %u)\n", camConfig.name.c_str(), camConfig.targetEntity.c_str(), targetID);
+                        } else {
+                            printf("WARNING: Target entity '%s' not found for camera '%s'\n", camConfig.targetEntity.c_str(), camConfig.name.c_str());
+                        }
+                    }
                     
-                    m_orbitDistance = sqrtf(offset.x * offset.x + offset.y * offset.y + offset.z * offset.z);
-                    m_orbitYaw = atan2f(offset.x, offset.z);
-                    m_orbitPitch = atan2f(offset.y, sqrtf(offset.x * offset.x + offset.z * offset.z));
-                    m_orbitMode = true;
+                    // Attach camera behavior
+                    if (camConfig.type == "chase" && targetID != 0) {
+                        auto* behavior = new ChaseCameraTargetBehavior(&m_entityRegistry, targetID);
+                        if (camConfig.behaviorParams.contains("distance"))
+                            behavior->setDistance(camConfig.behaviorParams["distance"].get<float>());
+                        if (camConfig.behaviorParams.contains("height"))
+                            behavior->setHeight(camConfig.behaviorParams["height"].get<float>());
+                        if (camConfig.behaviorParams.contains("smoothness"))
+                            behavior->setSmoothness(camConfig.behaviorParams["smoothness"].get<float>());
+                        
+                        behavior->attach(camera);
+                        behavior->initialize();
+                        m_entityRegistry.addBehaviorManual(camera->getID(), behavior);
+                        printf("DEBUG: Created chase camera: %s\n", camConfig.name.c_str());
+                        
+                    } else if (camConfig.type == "orbit" && targetID != 0) {
+                        auto* behavior = new OrbitCameraTargetBehavior(&m_entityRegistry, targetID);
+                        if (camConfig.behaviorParams.contains("distance"))
+                            behavior->setDistance(camConfig.behaviorParams["distance"].get<float>());
+                        if (camConfig.behaviorParams.contains("yaw"))
+                            behavior->setYaw(camConfig.behaviorParams["yaw"].get<float>());
+                        if (camConfig.behaviorParams.contains("pitch"))
+                            behavior->setPitch(camConfig.behaviorParams["pitch"].get<float>());
+                        if (camConfig.behaviorParams.contains("autoRotate"))
+                            behavior->setAutoRotate(camConfig.behaviorParams["autoRotate"].get<bool>());
+                        if (camConfig.behaviorParams.contains("rotationSpeed"))
+                            behavior->setRotationSpeed(camConfig.behaviorParams["rotationSpeed"].get<float>());
+                        
+                        behavior->attach(camera);
+                        behavior->initialize();
+                        m_entityRegistry.addBehaviorManual(camera->getID(), behavior);
+                        printf("DEBUG: Created orbit camera: %s\n", camConfig.name.c_str());
+                        
+                    } else if (camConfig.type == "stationary") {
+                        camera->setTarget(camConfig.target);
+                        printf("DEBUG: Created stationary camera: %s\n", camConfig.name.c_str());
+                    }
                     
-                    // Calculate initial camera position
-                    m_cameraPos.x = m_cameraTarget.x + m_orbitDistance * sinf(m_orbitYaw) * cosf(m_orbitPitch);
-                    m_cameraPos.y = m_cameraTarget.y + m_orbitDistance * sinf(m_orbitPitch);
-                    m_cameraPos.z = m_cameraTarget.z + m_orbitDistance * cosf(m_orbitYaw) * cosf(m_orbitPitch);
-                    
-                    printf("DEBUG: Orbit camera - distance %.1f, yaw %.2f, pitch %.2f\n",
-                           m_orbitDistance, m_orbitYaw, m_orbitPitch);
-                } else {
-                    m_cameraPos = scene.cameraPosition;
-                    m_cameraTarget = scene.cameraTarget;
-                    m_orbitMode = false;
-                    printf("DEBUG: Fixed camera at (%.1f, %.1f, %.1f)\n", 
-                           m_cameraPos.x, m_cameraPos.y, m_cameraPos.z);
+                    m_sceneManager->addCamera(camera->getID());
                 }
+                
+                // Register controllable entities
+                printf("DEBUG: Registering controllable entities...\n");
+                for (const auto& entityConfig : scene.entities) {
+                    if (entityConfig.controllable) {
+                        Entity* entity = m_entityRegistry.findEntityByName(entityConfig.name);
+                        if (entity) {
+                            m_sceneManager->addControllable(entity->getID());
+                            printf("DEBUG: Registered controllable: %s (type: %s)\n", entityConfig.name.c_str(), entityConfig.controllerType.c_str());
+                        }
+                    }
+                }
+                
+                // Create input controller
+                if (m_sceneManager->getCurrentControllable()) {
+                    auto* controller = new AircraftInputController(&m_entityRegistry);
+                    m_sceneManager->setInputController(controller);
+                    printf("DEBUG: Created aircraft input controller\n");
+                }
+                
+                // Initialize camera from scene manager
+                CameraEntity* activeCamera = m_sceneManager->getActiveCamera();
+                if (activeCamera) {
+                    m_cameraPos = activeCamera->getPosition();
+                    m_cameraTarget = activeCamera->getTarget();
+                    printf("DEBUG: Active camera: %s\n", activeCamera->getName().c_str());
+                }
+                
+                printf("DEBUG: Scene Manager: %zu cameras, %zu controllables\n", m_sceneManager->getCameraCount(), m_sceneManager->getControllableCount());
                 
                 // Create ground if specified
                 if (scene.ground.enabled) {
@@ -327,6 +388,12 @@ bool CubeApp::initialize(RendererAPI api, const char* sceneFile) {
 
 // ==================== SHUTDOWN ====================
 void CubeApp::shutdown() {
+    // Cleanup scene manager
+    if (m_sceneManager) {
+        delete m_sceneManager;
+        m_sceneManager = nullptr;
+    }
+    
     // Cleanup text renderer
     if (m_textRenderer) {
         m_textRenderer->shutdown();
@@ -401,98 +468,20 @@ void CubeApp::run() {
 
 // ==================== UPDATE ====================
 void CubeApp::update(float deltaTime) {
-    static bool debugOnce = true;
-    
     // Update all entities and their behaviors
     m_entityRegistry.update(deltaTime);
     
-    // Update orbit camera if in orbit mode
-    if (m_orbitMode) {
-        // Auto-rotate
-        m_orbitYaw += deltaTime * 0.3f;  // Rotate at 0.3 rad/sec
-        
-        // Update camera position based on orbit parameters
-        m_cameraPos.x = m_cameraTarget.x + m_orbitDistance * sinf(m_orbitYaw) * cosf(m_orbitPitch);
-        m_cameraPos.y = m_cameraTarget.y + m_orbitDistance * sinf(m_orbitPitch);
-        m_cameraPos.z = m_cameraTarget.z + m_orbitDistance * cosf(m_orbitYaw) * cosf(m_orbitPitch);
+    // Update input controller
+    if (m_sceneManager && m_sceneManager->getInputController()) {
+        m_sceneManager->getInputController()->update(deltaTime);
     }
     
-    // Get player-controlled entity
-    Entity* player = getPlayerEntity();
-    
-    if (debugOnce) {
-        printf("\n=== FIRST UPDATE DEBUG ===\n");
-        printf("Player entity: %p\n", (void*)player);
-        if (player) {
-            printf("Player position: (%.1f, %.1f, %.1f)\n",
-                   player->getPosition().x,
-                   player->getPosition().y,
-                   player->getPosition().z);
-        }
-        debugOnce = false;
+    // Update camera from scene manager
+    CameraEntity* activeCamera = m_sceneManager ? m_sceneManager->getActiveCamera() : nullptr;
+    if (activeCamera) {
+        m_cameraPos = activeCamera->getPosition();
+        m_cameraTarget = activeCamera->getTarget();
     }
-    
-    if (player) {
-        // Get flight behavior
-        auto* flight = m_entityRegistry.getBehavior<FlightDynamicsBehavior>(player->getID());
-        if (flight && flight->isUserControlled()) {
-            // Apply control inputs with limits to prevent erratic behavior
-            ControlInputs& controls = flight->getControlInputs();
-            
-            // Pitch and roll (arrow keys) - 50% deflection for smooth control
-            controls.elevator = 0.0f;
-            controls.aileron = 0.0f;
-            
-            if (m_arrowUpPressed) controls.elevator += 0.5f;     // Pitch up (reversed)
-            if (m_arrowDownPressed) controls.elevator -= 0.5f;   // Pitch down (reversed)
-            if (m_arrowLeftPressed) controls.aileron += 0.5f;    // Roll left (reversed)
-            if (m_arrowRightPressed) controls.aileron -= 0.5f;   // Roll right (reversed)
-            
-            // Rudder
-            controls.rudder = 0.0f;
-            if (m_deletePressed) controls.rudder += 0.5f;        // Rudder left (reversed)
-            if (m_pageDownPressed) controls.rudder -= 0.5f;      // Rudder right (reversed)
-            
-            static int logCount = 0;
-            if (logCount++ % 60 == 0 && (m_arrowUpPressed || m_arrowDownPressed || m_arrowLeftPressed || m_arrowRightPressed)) {
-                printf("Controls active: elevator=%.1f, aileron=%.1f, throttle=%.1f\n",
-                       controls.elevator, controls.aileron, controls.throttle);
-            }
-        }
-        
-        // Get chase camera behavior (only update camera if it exists)
-        auto* chaseCamera = m_entityRegistry.getBehavior<ChaseCameraBehavior>(player->getID());
-        if (chaseCamera) {
-            m_cameraPos = chaseCamera->getCameraPosition();
-            m_cameraTarget = chaseCamera->getCameraTarget();
-        }
-        
-        // Get orbit camera behavior (if no chase camera)
-        auto* orbitCamera = m_entityRegistry.getBehavior<OrbitCameraBehavior>(player->getID());
-        if (orbitCamera) {
-            m_cameraPos = orbitCamera->getCameraPosition();
-            m_cameraTarget = orbitCamera->getCameraTarget();
-        }
-    }
-    
-    // Also check ALL entities for camera behaviors (not just player)
-    const auto& allEntities = m_entityRegistry.getAllEntities();
-    for (const auto& [id, entity] : allEntities) {
-        auto* orbitCam = m_entityRegistry.getBehavior<OrbitCameraBehavior>(id);
-        if (orbitCam) {
-            m_cameraPos = orbitCam->getCameraPosition();
-            m_cameraTarget = orbitCam->getCameraTarget();
-            break;  // Use first camera found
-        }
-        
-        auto* chaseCam = m_entityRegistry.getBehavior<ChaseCameraBehavior>(id);
-        if (chaseCam) {
-            m_cameraPos = chaseCam->getCameraPosition();
-            m_cameraTarget = chaseCam->getCameraTarget();
-            break;
-        }
-    }
-    // If no camera behaviors found, camera stays at scene-defined position
 }
 
 // ==================== RENDER ====================
@@ -847,36 +836,32 @@ void CubeApp::createGroundPlane(const SceneConfigV2::GroundConfig& groundConfig)
 // ==================== INPUT HANDLING ====================
 void CubeApp::onKey(int key, int scancode, int action, int mods) {
     (void)scancode;
-    (void)mods;
     
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
         glfwSetWindowShouldClose(m_window, 1);
     }
     
-    // Flight controls
-    if (key == GLFW_KEY_UP) m_arrowUpPressed = (action != GLFW_RELEASE);
-    if (key == GLFW_KEY_DOWN) m_arrowDownPressed = (action != GLFW_RELEASE);
-    if (key == GLFW_KEY_LEFT) m_arrowLeftPressed = (action != GLFW_RELEASE);
-    if (key == GLFW_KEY_RIGHT) m_arrowRightPressed = (action != GLFW_RELEASE);
-    if (key == GLFW_KEY_DELETE) m_deletePressed = (action != GLFW_RELEASE);
-    if (key == GLFW_KEY_PAGE_DOWN) m_pageDownPressed = (action != GLFW_RELEASE);
+    // Camera switching (C key)
+    if (key == GLFW_KEY_C && action == GLFW_PRESS) {
+        if (m_sceneManager) {
+            m_sceneManager->nextCamera();
+        }
+    }
     
-    // Throttle controls
-    Entity* player = getPlayerEntity();
-    if (player && action == GLFW_PRESS) {
-        auto* flight = m_entityRegistry.getBehavior<FlightDynamicsBehavior>(player->getID());
-        if (flight) {
-            if (key == GLFW_KEY_EQUAL) {
-                float& throttle = flight->getControlInputs().throttle;
-                throttle = std::min(1.0f, throttle + 0.1f);
-                LOG_INFO("Throttle: %.0f%%", throttle * 100);
-            }
-            if (key == GLFW_KEY_MINUS) {
-                float& throttle = flight->getControlInputs().throttle;
-                throttle = std::max(0.0f, throttle - 0.1f);
-                LOG_INFO("Throttle: %.0f%%", throttle * 100);
+    // Entity switching (Tab)
+    if (key == GLFW_KEY_TAB && action == GLFW_PRESS) {
+        if (m_sceneManager) {
+            if (mods & GLFW_MOD_SHIFT) {
+                m_sceneManager->previousControllable();
+            } else {
+                m_sceneManager->nextControllable();
             }
         }
+    }
+    
+    // Scene reload (R)
+    if (key == GLFW_KEY_R && action == GLFW_PRESS) {
+        reloadScene();
     }
     
     // Toggle ground
@@ -901,6 +886,15 @@ void CubeApp::onKey(int key, int scancode, int action, int mods) {
     if (key == GLFW_KEY_N && action == GLFW_PRESS) {
         m_useNormalMapping = !m_useNormalMapping;
         LOG_INFO("Normal mapping: %s", m_useNormalMapping ? "ENABLED" : "DISABLED");
+    }
+    
+    // Pass keys to input controller
+    if (m_sceneManager && m_sceneManager->getInputController()) {
+        if (action == GLFW_PRESS) {
+            m_sceneManager->getInputController()->onKeyPress(key);
+        } else if (action == GLFW_RELEASE) {
+            m_sceneManager->getInputController()->onKeyRelease(key);
+        }
     }
 }
 
@@ -928,13 +922,12 @@ void CubeApp::onCursorPos(double x, double y) {
         float dx = (float)(x - m_lastX);
         float dy = (float)(y - m_lastY);
         
-        // Find orbit camera behavior and update it
-        const auto& allEntities = m_entityRegistry.getAllEntities();
-        for (const auto& [id, entity] : allEntities) {
-            auto* orbitCam = m_entityRegistry.getBehavior<OrbitCameraBehavior>(id);
-            if (orbitCam) {
-                orbitCam->rotate(dx * 0.01f, -dy * 0.01f);
-                break;
+        // Update orbit camera via scene manager
+        CameraEntity* activeCamera = m_sceneManager ? m_sceneManager->getActiveCamera() : nullptr;
+        if (activeCamera) {
+            auto* orbitBehavior = m_entityRegistry.getBehavior<OrbitCameraTargetBehavior>(activeCamera->getID());
+            if (orbitBehavior) {
+                orbitBehavior->rotate(dx * 0.01f, -dy * 0.01f);
             }
         }
         
@@ -946,13 +939,61 @@ void CubeApp::onCursorPos(double x, double y) {
 void CubeApp::onScroll(double xoffset, double yoffset) {
     (void)xoffset;
     
-    // Find orbit camera behavior and zoom it
-    const auto& allEntities = m_entityRegistry.getAllEntities();
-    for (const auto& [id, entity] : allEntities) {
-        auto* orbitCam = m_entityRegistry.getBehavior<OrbitCameraBehavior>(id);
-        if (orbitCam) {
-            orbitCam->zoom(-(float)yoffset * 1.0f);
-            break;
+    // Update orbit camera via scene manager
+    CameraEntity* activeCamera = m_sceneManager ? m_sceneManager->getActiveCamera() : nullptr;
+    if (activeCamera) {
+        auto* orbitBehavior = m_entityRegistry.getBehavior<OrbitCameraTargetBehavior>(activeCamera->getID());
+        if (orbitBehavior) {
+            orbitBehavior->zoom(-(float)yoffset * 1.0f);
         }
     }
+}
+
+// ==================== SCENE RELOADING ====================
+bool CubeApp::reloadScene() {
+    if (m_sceneFilePath.empty()) {
+        LOG_WARNING("No scene file to reload");
+        return false;
+    }
+    
+    LOG_INFO("Reloading scene: %s", m_sceneFilePath.c_str());
+    
+    // Clear scene manager
+    m_sceneManager->clear();
+    
+    // Destroy render data
+    for (auto& pair : m_modelMeshHandles) {
+        for (uint32_t handle : pair.second) {
+            if (handle) m_renderer->destroyMesh(handle);
+        }
+    }
+    for (auto& pair : m_modelTextureHandles) {
+        for (uint32_t handle : pair.second) {
+            if (handle) m_renderer->destroyTexture(handle);
+        }
+    }
+    m_modelMeshHandles.clear();
+    m_modelTextureHandles.clear();
+    
+    // Destroy environment
+    if (m_environment.groundMesh) m_renderer->destroyMesh(m_environment.groundMesh);
+    if (m_environment.runwayMesh) m_renderer->destroyMesh(m_environment.runwayMesh);
+    if (m_environment.groundTexture) m_renderer->destroyTexture(m_environment.groundTexture);
+    if (m_environment.runwayTexture) m_renderer->destroyTexture(m_environment.runwayTexture);
+    m_environment.groundMesh = 0;
+    m_environment.runwayMesh = 0;
+    m_environment.groundTexture = 0;
+    m_environment.runwayTexture = 0;
+    
+    // Clear registries
+    m_entityRegistry.clear();
+    m_modelRegistry.clear();
+    
+    // Reload scene file
+    SceneConfigV2 scene;
+    if (SceneLoaderV2::loadScene(m_sceneFilePath.c_str(), scene)) {
+        return SceneLoaderV2::applyScene(scene, m_modelRegistry, m_entityRegistry);
+    }
+    
+    return false;
 }

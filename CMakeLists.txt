@@ -7,26 +7,42 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # -------------------- Sources --------------------
 set(SOURCES
-  main.cpp
-  app.cpp
-  app.h
-  dds_loader.h
-  debug.h
-  flight_dynamics.cpp
-  flight_dynamics.h
-  renderer_opengl.cpp
-  renderer.h
-  math_utils.h
-  model_assimp.cpp
-  model.h
-  normal_map_gen.h
-  scene.h
-  scene_loader.cpp
-  scene_loader.h
-  stb_image_impl.cpp
-  texture_cache.h
-  text_renderer_gl.cpp
-  text_renderer_gl.h
+    app_v3.cpp
+    entity.cpp
+    flight_dynamics.cpp
+    main_v3.cpp
+    model_assimp.cpp
+    renderer_d3d11.cpp
+    renderer_d3d12.cpp
+    renderer_opengl.cpp
+    stb_image_impl.cpp
+    text_renderer_gl.cpp
+    aircraft_input_controller.h
+    app_v3.h
+    behavior.h
+    camera_behaviors.h
+    camera_entity.h
+    chase_camera_behavior.h
+    dds_loader.h
+    debug.h
+    entity.h
+    entity_registry.h
+    flight_dynamics.h
+    flight_dynamics_behavior.h
+    input_controller.h
+    math_utils.h
+    model.h
+    model_registry.h
+    normal_map_gen.h
+    orbit_camera_behavior.h
+    osd.h
+    renderer.h
+    scene.h
+    scene_loader_v2.h
+    scene_manager.h
+    text_renderer.h
+    text_renderer_gl.h
+    texture_cache.h
 )
 
 if(WIN32)

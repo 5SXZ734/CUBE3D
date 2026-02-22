@@ -34,6 +34,16 @@ struct RenderBatch {
     }
 };
 
+// Get rendering statistics
+struct RenderStats {
+	uint32_t objectCount;
+	uint32_t visibleObjects;
+	uint32_t drawCalls;
+	uint32_t instancesDrawn;
+	uint32_t batchCount;
+	float averageInstancesPerBatch;
+};
+
 // ==================== Scene ====================
 class Scene {
 private:
@@ -157,16 +167,7 @@ public:
         m_lastBatchCount = m_lastDrawCalls;  // In fallback mode, one batch per draw call
     }
     
-    // Get rendering statistics
-    struct RenderStats {
-        uint32_t objectCount;
-        uint32_t visibleObjects;
-        uint32_t drawCalls;
-        uint32_t instancesDrawn;
-        uint32_t batchCount;
-        float averageInstancesPerBatch;
-    };
-    
+   
     RenderStats getRenderStats() const {
         RenderStats stats;
         stats.objectCount = (uint32_t)m_objects.size();

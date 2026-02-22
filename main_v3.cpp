@@ -1,5 +1,5 @@
-// main.cpp - Entry point with ECS system
-#include "app_v2.h"
+// main_v3.cpp - Entry point with ECS system
+#include "app_v3.h"
 #include "debug.h"
 #include <cstdio>
 

@@ -3,6 +3,7 @@
 #define ENTITY_REGISTRY_H
 
 #include "entity.h"
+#include "camera_entity.h"
 #include "behavior.h"
 #include <unordered_map>
 #include <vector>
@@ -25,6 +26,14 @@ public:
         Entity* entity = new Entity(id, name);
         m_entities[id] = entity;
         return entity;
+    }
+    
+    // Camera entity management
+    CameraEntity* createCameraEntity(const std::string& name) {
+        EntityID id = m_nextEntityID++;
+        CameraEntity* camera = new CameraEntity(id, name);
+        m_entities[id] = camera;
+        return camera;
     }
     
     void destroyEntity(EntityID id) {
@@ -64,6 +73,13 @@ public:
             m_behaviors[entityID].push_back(behavior);
         }
         return behavior;
+    }
+    
+    // Add already-created behavior (for behaviors with constructor parameters)
+    void addBehaviorManual(EntityID entityID, Behavior* behavior) {
+        if (behavior) {
+            m_behaviors[entityID].push_back(behavior);
+        }
     }
     
     void removeBehaviors(EntityID entityID) {

@@ -22,11 +22,23 @@ struct SceneConfigV2 {
     // Model registrations (key -> filepath)
     std::map<std::string, std::string> models;
     
-    // Camera settings
+    // Camera settings (legacy single camera)
     std::string cameraType;  // "fps", "orbit", "chase"
     Vec3 cameraPosition;
     Vec3 cameraTarget;
     float cameraFOV;
+    
+    // New: Multiple cameras
+    struct CameraConfig {
+        std::string name;
+        std::string type;  // "chase", "orbit", "stationary"
+        std::string targetEntity;  // Name of entity to target (for chase/orbit)
+        Vec3 position;
+        Vec3 target;
+        float fov;
+        json behaviorParams;
+    };
+    std::vector<CameraConfig> cameras;
     
     // Entities
     struct EntityConfig {
@@ -36,6 +48,8 @@ struct SceneConfigV2 {
         Vec3 rotation;
         Vec3 scale;
         bool visible;
+        bool controllable;  // Can user control this entity?
+        std::string controllerType;  // "aircraft", "car", etc.
         
         // Behaviors to attach
         std::vector<std::string> behaviors;  // e.g., ["FlightDynamics", "ChaseCamera"]
@@ -131,6 +145,49 @@ public:
             }
         }
         
+        // Parse cameras array (new multi-camera system)
+        if (j.contains("cameras") && j["cameras"].is_array()) {
+            for (auto& camJson : j["cameras"]) {
+                SceneConfigV2::CameraConfig camConfig;
+                
+                if (camJson.contains("name") && camJson["name"].is_string()) {
+                    camConfig.name = camJson["name"].get<std::string>();
+                }
+                
+                if (camJson.contains("type") && camJson["type"].is_string()) {
+                    camConfig.type = camJson["type"].get<std::string>();
+                }
+                
+                if (camJson.contains("targetEntity") && camJson["targetEntity"].is_string()) {
+                    camConfig.targetEntity = camJson["targetEntity"].get<std::string>();
+                }
+                
+                if (camJson.contains("position") && camJson["position"].is_array() && camJson["position"].size() == 3) {
+                    camConfig.position.x = camJson["position"][0].get<float>();
+                    camConfig.position.y = camJson["position"][1].get<float>();
+                    camConfig.position.z = camJson["position"][2].get<float>();
+                }
+                
+                if (camJson.contains("target") && camJson["target"].is_array() && camJson["target"].size() == 3) {
+                    camConfig.target.x = camJson["target"][0].get<float>();
+                    camConfig.target.y = camJson["target"][1].get<float>();
+                    camConfig.target.z = camJson["target"][2].get<float>();
+                }
+                
+                if (camJson.contains("fov") && camJson["fov"].is_number()) {
+                    camConfig.fov = camJson["fov"].get<float>();
+                } else {
+                    camConfig.fov = 75.0f;
+                }
+                
+                if (camJson.contains("behaviorParams")) {
+                    camConfig.behaviorParams = camJson["behaviorParams"];
+                }
+                
+                outScene.cameras.push_back(camConfig);
+            }
+        }
+        
         // Parse entities
         if (j.contains("entities") && j["entities"].is_array()) {
             for (auto& entityJson : j["entities"]) {
@@ -172,6 +229,18 @@ public:
                 entity.visible = true;
                 if (entityJson.contains("visible") && entityJson["visible"].is_boolean()) {
                     entity.visible = entityJson["visible"].get<bool>();
+                }
+                
+                // Controllable
+                entity.controllable = false;
+                if (entityJson.contains("controllable") && entityJson["controllable"].is_boolean()) {
+                    entity.controllable = entityJson["controllable"].get<bool>();
+                }
+                
+                // Controller type
+                entity.controllerType = "";
+                if (entityJson.contains("controllerType") && entityJson["controllerType"].is_string()) {
+                    entity.controllerType = entityJson["controllerType"].get<std::string>();
                 }
                 
                 // Behaviors

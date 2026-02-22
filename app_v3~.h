@@ -1,6 +1,6 @@
-// app.h - Application logic (graphics API independent)
-#ifndef APP_H
-#define APP_H
+// app_v3.h - Application logic
+#ifndef APP_V3_H
+#define APP_V3_H
 
 #include "renderer.h"
 #include "model.h"
@@ -127,4 +127,4 @@ private:
     ITextRenderer* m_textRenderer;
 };
 
-#endif // APP_H
+#endif // APP_V3_H
