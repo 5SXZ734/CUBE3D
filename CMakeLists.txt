@@ -19,6 +19,7 @@ set(SOURCES
     renderer_opengl.cpp
     stb_image_impl.cpp
     text_renderer_gl.cpp
+    acdyn_adapter.h
     aircraft_input_controller.h
     app_v3.h
     behavior.h
@@ -31,6 +32,7 @@ set(SOURCES
     entity_registry.h
     flight_dynamics.h
     flight_dynamics_behavior.h
+    flight_dynamics_interface.h
     input_controller.h
     math_utils.h
     model.h
@@ -42,6 +44,7 @@ set(SOURCES
     scene.h
     scene_loader_v2.h
     scene_manager.h
+    simple_flight_dynamics.h
     text_renderer.h
     text_renderer_gl.h
     texture_cache.h
