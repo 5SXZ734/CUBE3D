@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "" FORCE)
+
 # -------------------- Sources --------------------
 set(SOURCES
     app_v3.cpp
@@ -82,6 +84,19 @@ else()
     "${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}/include"
   )
 endif()
+
+# -------------------- ACDyn (installed static lib) --------------------
+set(ACDYN_PREFIX "D:/WORK/aero/_install/acdyn" CACHE PATH "ACDyn install prefix")
+
+add_library(acdyn::acdyn STATIC IMPORTED GLOBAL)
+
+set_target_properties(acdyn::acdyn PROPERTIES
+  INTERFACE_INCLUDE_DIRECTORIES "${ACDYN_PREFIX}/include"
+  IMPORTED_LOCATION_RELEASE     "${ACDYN_PREFIX}/lib/acdyn.lib"
+  IMPORTED_LOCATION_DEBUG       "${ACDYN_PREFIX}/lib/debug/acdyn.lib"
+)
+
+target_link_libraries(cube_viewer PRIVATE acdyn::acdyn)
 
 # -------------------- Platform specifics --------------------
 if(WIN32)
