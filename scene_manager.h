@@ -5,6 +5,7 @@
 #include "entity_registry.h"
 #include "model_registry.h"
 #include "camera_entity.h"
+#include "camera_behaviors.h"
 #include "input_controller.h"
 #include <vector>
 #include <string>
@@ -139,14 +140,53 @@ private:
     void setCurrentControllable(size_t index) {
         if (index >= m_controllableIDs.size()) return;
         
+        EntityID newTargetID = m_controllableIDs[index];
+        Entity* current = m_entityRegistry.getEntity(newTargetID);
+        if (!current) return;
+        
         // Reattach input controller
         if (m_inputController) {
-            Entity* current = m_entityRegistry.getEntity(m_controllableIDs[index]);
-            if (current) {
-                m_inputController->detach();
-                m_inputController->attach(current);
+            m_inputController->detach();
+            m_inputController->attach(current);
+        }
+        
+        // Update all camera behaviors to target the new entity
+        for (EntityID cameraID : m_cameraIDs) {
+            CameraEntity* camera = dynamic_cast<CameraEntity*>(m_entityRegistry.getEntity(cameraID));
+            if (!camera) continue;
+            
+            // Check for chase camera behavior
+            auto* chaseBehavior = m_entityRegistry.getBehavior<ChaseCameraTargetBehavior>(cameraID);
+            if (chaseBehavior) {
+                // Recreate behavior with new target
+                m_entityRegistry.removeBehavior<ChaseCameraTargetBehavior>(cameraID);
+                auto* newBehavior = new ChaseCameraTargetBehavior(&m_entityRegistry, newTargetID);
+                newBehavior->setDistance(25.0f);  // Use defaults or store original params
+                newBehavior->setHeight(8.0f);
+                newBehavior->setSmoothness(0.92f);
+                newBehavior->attach(camera);
+                newBehavior->initialize();
+                m_entityRegistry.addBehaviorManual(cameraID, newBehavior);
+            }
+            
+            // Check for orbit camera behavior
+            auto* orbitBehavior = m_entityRegistry.getBehavior<OrbitCameraTargetBehavior>(cameraID);
+            if (orbitBehavior) {
+                // Recreate behavior with new target
+                m_entityRegistry.removeBehavior<OrbitCameraTargetBehavior>(cameraID);
+                auto* newBehavior = new OrbitCameraTargetBehavior(&m_entityRegistry, newTargetID);
+                newBehavior->setDistance(40.0f);
+                newBehavior->setYaw(0.6f);
+                newBehavior->setPitch(-0.3f);
+                newBehavior->setAutoRotate(true);
+                newBehavior->setRotationSpeed(0.2f);
+                newBehavior->attach(camera);
+                newBehavior->initialize();
+                m_entityRegistry.addBehaviorManual(cameraID, newBehavior);
             }
         }
+        
+        printf("Cameras retargeted to: %s\n", current->getName().c_str());
     }
     
     EntityRegistry& m_entityRegistry;

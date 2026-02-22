@@ -106,6 +106,23 @@ public:
         return nullptr;
     }
     
+    template<typename T>
+    void removeBehavior(EntityID entityID) {
+        auto it = m_behaviors.find(entityID);
+        if (it != m_behaviors.end()) {
+            for (auto behaviorIt = it->second.begin(); behaviorIt != it->second.end(); ++behaviorIt) {
+                T* typed = dynamic_cast<T*>(*behaviorIt);
+                if (typed) {
+                    typed->shutdown();
+                    typed->detach();
+                    delete typed;
+                    it->second.erase(behaviorIt);
+                    return;
+                }
+            }
+        }
+    }
+    
     std::vector<Behavior*> getBehaviors(EntityID entityID) {
         auto it = m_behaviors.find(entityID);
         if (it != m_behaviors.end()) {
